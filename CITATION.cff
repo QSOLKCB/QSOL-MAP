@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use QSOL-MAP, please cite this repository and the relevant frozen release."
+title: "QSOL-MAP: QSOL Machine Perception Audio Protocol"
+type: software
+authors:
+  - family-names: Slade
+    given-names: Trent
+repository-code: "https://github.com/QSOLKCB/QSOL-MAP"
+license: Apache-2.0
