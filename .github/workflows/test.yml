@@ -1,0 +1,29 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qsol-map-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Show reference runtime
+        run: python3 --version
+
+      - name: Compile Python sources
+        run: python3 -m compileall -q qsol_map tests
+
+      - name: Run complete deterministic reference suite
+        run: python3 -m unittest discover -s tests -v
