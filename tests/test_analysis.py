@@ -2,8 +2,12 @@ import copy
 import struct
 import unittest
 
-from qsol_map.analysis import build_percept, verify_percept_envelope
-from qsol_map.canonical import canonical_bytes
+from qsol_map.analysis import (
+    PERCEPT_DOMAIN,
+    build_percept,
+    verify_percept_envelope,
+)
+from qsol_map.canonical import canonical_bytes, domain_sha256
 from qsol_map.tables import FRAME_SIZE
 from qsol_map.wav import parse_pcm16_wav
 
@@ -72,6 +76,24 @@ class AnalysisTests(unittest.TestCase):
         changed = copy.deepcopy(envelope)
         changed["percept"]["source"]["sample_rate_hz"] = 44100
         self.assertFalse(verify_percept_envelope(changed))
+
+    def test_non_ascii_digest_is_rejected_without_exception(self):
+        wave = parse_pcm16_wav(make_wav([0, 1, 2, 3] * 80))
+        envelope = build_percept(wave)
+        envelope["percept_sha256"] = "é" * 64
+        self.assertFalse(verify_percept_envelope(envelope))
+
+    def test_structurally_invalid_core_is_rejected_even_with_matching_hash(self):
+        percept = {
+            "schema": "qsol-map-percept-core-v0.1",
+            "layer": "L3_semantic_interpretation",
+        }
+        envelope = {
+            "schema": "qsol-map-percept-envelope-v0.1",
+            "percept": percept,
+            "percept_sha256": domain_sha256(PERCEPT_DOMAIN, canonical_bytes(percept)),
+        }
+        self.assertFalse(verify_percept_envelope(envelope))
 
     def test_stereo_channels_are_not_collapsed(self):
         interleaved = []
