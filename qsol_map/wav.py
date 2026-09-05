@@ -63,8 +63,8 @@ def parse_pcm16_wav(blob: bytes) -> PCM16Wave:
         raise WavFormatError("invalid RIFF chunk alignment")
     if fmt is None or data is None:
         raise WavFormatError("both fmt and data chunks are required")
-    if len(fmt) < 16:
-        raise WavFormatError("fmt chunk is too short")
+    if len(fmt) != 16:
+        raise WavFormatError("fmt chunk must use the exact 16-byte PCM form; extensions are unsupported")
 
     audio_format, channels, sample_rate, byte_rate, block_align, bits_per_sample = (
         struct.unpack_from("<HHIIHH", fmt, 0)
