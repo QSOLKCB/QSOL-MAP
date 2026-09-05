@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from typing import Sequence
 
 from .canonical import canonical_bytes, domain_sha256
@@ -23,6 +24,10 @@ IMPLEMENTATION_ID = "qsol-map-python-reference-0.1.0"
 PERCEPT_DOMAIN = "QSOL-MAP/PERCEPT/v0.1"
 COMPLEX_MATRIX_DOMAIN = "QSOL-MAP/COMPLEX-MATRIX/v0.1"
 POWER_MATRIX_DOMAIN = "QSOL-MAP/POWER-MATRIX/v0.1"
+
+_HEX64 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_SIGNED_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)\Z", re.ASCII)
+_UNSIGNED_DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)\Z", re.ASCII)
 
 _BIT_REVERSED = tuple(
     int(f"{index:08b}"[::-1], 2)
@@ -220,14 +225,223 @@ def build_percept(wave: PCM16Wave) -> dict:
     }
 
 
+def _plain_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _hex_digest(value: object) -> bool:
+    return isinstance(value, str) and _HEX64.fullmatch(value) is not None
+
+
+def _signed_decimal(value: object) -> bool:
+    return isinstance(value, str) and _SIGNED_DECIMAL.fullmatch(value) is not None
+
+
+def _unsigned_decimal(value: object) -> bool:
+    return isinstance(value, str) and _UNSIGNED_DECIMAL.fullmatch(value) is not None
+
+
+def _exact_keys(value: object, keys: set[str]) -> bool:
+    return isinstance(value, dict) and set(value) == keys
+
+
+def _validate_frame_event(event: object, frame_index: int) -> bool:
+    if not _exact_keys(
+        event,
+        {
+            "frame_index",
+            "sample_start",
+            "windowed_energy",
+            "spectral_centroid_bin",
+            "dominant_non_dc_bin",
+            "top_components",
+        },
+    ):
+        return False
+    if event["frame_index"] != frame_index or event["sample_start"] != frame_index * HOP_SIZE:
+        return False
+    if not _plain_int(event["frame_index"]) or not _plain_int(event["sample_start"]):
+        return False
+    if not _unsigned_decimal(event["windowed_energy"]):
+        return False
+
+    centroid = event["spectral_centroid_bin"]
+    if not _exact_keys(centroid, {"numerator", "denominator"}):
+        return False
+    if not _unsigned_decimal(centroid["numerator"]) or not _unsigned_decimal(centroid["denominator"]):
+        return False
+
+    dominant = event["dominant_non_dc_bin"]
+    if not _plain_int(dominant) or not 1 <= dominant <= FRAME_SIZE // 2:
+        return False
+
+    components = event["top_components"]
+    if not isinstance(components, list) or len(components) != TOP_K:
+        return False
+    bins: set[int] = set()
+    for component in components:
+        if not _exact_keys(component, {"bin", "real", "imag", "power"}):
+            return False
+        bin_index = component["bin"]
+        if not _plain_int(bin_index) or not 0 <= bin_index <= FRAME_SIZE // 2:
+            return False
+        if bin_index in bins:
+            return False
+        bins.add(bin_index)
+        if not _signed_decimal(component["real"]) or not _signed_decimal(component["imag"]):
+            return False
+        if not _unsigned_decimal(component["power"]):
+            return False
+    return True
+
+
+def _validate_channel(channel: object, channel_index: int, frame_count: int) -> bool:
+    if not _exact_keys(
+        channel,
+        {
+            "channel_index",
+            "waveform",
+            "aggregate_power_by_bin",
+            "complex_matrix_sha256",
+            "power_matrix_sha256",
+            "events",
+        },
+    ):
+        return False
+    if channel["channel_index"] != channel_index or not _plain_int(channel["channel_index"]):
+        return False
+
+    waveform = channel["waveform"]
+    if not _exact_keys(waveform, {"sample_count", "peak_abs", "sum_squares", "zero_crossings"}):
+        return False
+    if waveform["sample_count"] != frame_count or not _plain_int(waveform["sample_count"]):
+        return False
+    peak_abs = waveform["peak_abs"]
+    zero_crossings = waveform["zero_crossings"]
+    if not _plain_int(peak_abs) or not 0 <= peak_abs <= 32768:
+        return False
+    if not _plain_int(zero_crossings) or not 0 <= zero_crossings <= max(0, frame_count - 1):
+        return False
+    if not _unsigned_decimal(waveform["sum_squares"]):
+        return False
+
+    aggregate = channel["aggregate_power_by_bin"]
+    if not isinstance(aggregate, list) or len(aggregate) != FRAME_SIZE // 2 + 1:
+        return False
+    if not all(_unsigned_decimal(value) for value in aggregate):
+        return False
+    if not _hex_digest(channel["complex_matrix_sha256"]) or not _hex_digest(channel["power_matrix_sha256"]):
+        return False
+
+    events = channel["events"]
+    expected_events = (frame_count + HOP_SIZE - 1) // HOP_SIZE
+    if not isinstance(events, list) or len(events) != expected_events:
+        return False
+    return all(_validate_frame_event(event, index) for index, event in enumerate(events))
+
+
+def _validate_percept_core(percept: object) -> bool:
+    if not _exact_keys(
+        percept,
+        {"schema", "layer", "implementation", "source", "profile", "channels", "interpretation"},
+    ):
+        return False
+    if percept["schema"] != "qsol-map-percept-core-v0.1":
+        return False
+    if percept["layer"] != "L1_deterministic_acoustic_observation":
+        return False
+    if percept["implementation"] != IMPLEMENTATION_ID:
+        return False
+
+    source = percept["source"]
+    if not _exact_keys(
+        source,
+        {"wav_sha256", "pcm_s16le_sha256", "sample_rate_hz", "channels", "frame_count", "bits_per_sample"},
+    ):
+        return False
+    if not _hex_digest(source["wav_sha256"]) or not _hex_digest(source["pcm_s16le_sha256"]):
+        return False
+    sample_rate = source["sample_rate_hz"]
+    channel_count = source["channels"]
+    frame_count = source["frame_count"]
+    if not _plain_int(sample_rate) or not 1 <= sample_rate <= 768_000:
+        return False
+    if not _plain_int(channel_count) or not 1 <= channel_count <= 8:
+        return False
+    if not _plain_int(frame_count) or frame_count <= 0:
+        return False
+    if source["bits_per_sample"] != 16 or not _plain_int(source["bits_per_sample"]):
+        return False
+
+    profile = percept["profile"]
+    if not _exact_keys(
+        profile,
+        {
+            "id",
+            "frame_size_samples",
+            "hop_size_samples",
+            "window",
+            "twiddle",
+            "q15_one",
+            "top_components_per_frame",
+            "frequency_bin_rule",
+            "tail_policy",
+            "numeric_contract",
+        },
+    ):
+        return False
+    if profile["id"] != PROFILE_ID:
+        return False
+    if profile["frame_size_samples"] != FRAME_SIZE or profile["hop_size_samples"] != HOP_SIZE:
+        return False
+    if profile["window"] != "symmetric-integer-triangular-v1":
+        return False
+    if profile["twiddle"] != "frozen-exp-minus-i-2pi-k-over-256-q15-v1":
+        return False
+    if profile["q15_one"] != Q15_ONE or profile["top_components_per_frame"] != TOP_K:
+        return False
+    if profile["tail_policy"] != "zero_pad_each_hop_start_below_frame_count":
+        return False
+    if profile["numeric_contract"] != "exact_unbounded_integer_reference":
+        return False
+    if profile["frequency_bin_rule"] != {
+        "numerator": "bin_index * sample_rate_hz",
+        "denominator": FRAME_SIZE,
+    }:
+        return False
+
+    channels = percept["channels"]
+    if not isinstance(channels, list) or len(channels) != channel_count:
+        return False
+    if not all(_validate_channel(channel, index, frame_count) for index, channel in enumerate(channels)):
+        return False
+
+    interpretation = percept["interpretation"]
+    if not _exact_keys(
+        interpretation,
+        {"learned_tokenization_present", "semantic_inference_present", "human_subjective_report_present"},
+    ):
+        return False
+    return interpretation == {
+        "learned_tokenization_present": False,
+        "semantic_inference_present": False,
+        "human_subjective_report_present": False,
+    }
+
+
 def verify_percept_envelope(envelope: dict) -> bool:
-    if not isinstance(envelope, dict):
+    if not _exact_keys(envelope, {"schema", "percept_sha256", "percept"}):
         return False
-    if envelope.get("schema") != "qsol-map-percept-envelope-v0.1":
+    if envelope["schema"] != "qsol-map-percept-envelope-v0.1":
         return False
-    percept = envelope.get("percept")
-    digest = envelope.get("percept_sha256")
-    if not isinstance(percept, dict) or not isinstance(digest, str):
+
+    percept = envelope["percept"]
+    digest = envelope["percept_sha256"]
+    if not _hex_digest(digest) or not _validate_percept_core(percept):
         return False
-    expected = domain_sha256(PERCEPT_DOMAIN, canonical_bytes(percept))
+
+    try:
+        expected = domain_sha256(PERCEPT_DOMAIN, canonical_bytes(percept))
+    except (TypeError, ValueError, UnicodeError):
+        return False
     return hmac.compare_digest(expected, digest)
