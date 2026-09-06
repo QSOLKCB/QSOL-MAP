@@ -123,6 +123,67 @@ class LatestFeasibilityTests(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_single_long_event_ranking_must_match_aggregate_row(self):
+        wave = parse_pcm16_wav(make_wav([3, -2, 5, -1] * 50, sample_rate=1000))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        spectral = changed["percept"]["channels"][0]["long_spectral"]
+        self.assertEqual(len(spectral["events"]), 1)
+        event = spectral["events"][0]
+        reported_bins = {component["bin"] for component in event["top_components"]}
+        target_bin = next(
+            bin_index
+            for bin_index in range(1, len(spectral["aggregate_power_by_bin"]))
+            if bin_index not in reported_bins
+        )
+        strongest_power = max(int(component["power"]) for component in event["top_components"])
+        old_power = int(spectral["aggregate_power_by_bin"][target_bin])
+        new_power = strongest_power + 1
+        delta = new_power - old_power
+        self.assertGreater(delta, 0)
+        spectral["aggregate_power_by_bin"][target_bin] = str(new_power)
+        regions = spectral["aggregate_power_by_frequency_region"]
+        regions["below_20khz_reference"] = str(
+            int(regions["below_20khz_reference"]) + delta
+        )
+        centroid = event["spectral_centroid_bin"]
+        centroid["denominator"] = str(int(centroid["denominator"]) + delta)
+        centroid["numerator"] = str(
+            int(centroid["numerator"]) + target_bin * delta
+        )
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_single_sample_relationships_require_integer_pcm_realization(self):
+        wave = parse_pcm16_wav(make_wav([1, 1], channels=2))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        relation = changed["percept"]["channel_relationships"][0]
+        relation.update(
+            {
+                "dot_product": "2",
+                "dot_product_sign": 1,
+                "left_sum_squares": "2",
+                "right_sum_squares": "2",
+                "difference_sum_squares": "0",
+                "sum_sum_squares": "8",
+                "zero_lag_correlation_squared": {
+                    "numerator": "4",
+                    "denominator": "4",
+                },
+            }
+        )
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_one_transition_requires_equal_positive_sum_and_maximum(self):
+        wave = parse_pcm16_wav(make_wav([0] * 200))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        transient = changed["percept"]["channels"][0]["transient"]
+        self.assertEqual(transient["candidate_count"], 0)
+        transient["positive_delta_sum"] = "2"
+        transient["maximum_positive_delta"] = "1"
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
 
 if __name__ == "__main__":
     unittest.main()
