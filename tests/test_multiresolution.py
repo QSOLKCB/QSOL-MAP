@@ -146,12 +146,29 @@ class MultiResolutionTests(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_dominant_non_dc_bin_matches_ranked_components(self):
+        wave = parse_pcm16_wav(make_wav([1, -2, 3, -4] * 300))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        event = changed["percept"]["channels"][0]["long_spectral"]["events"][0]
+        original = event["dominant_non_dc_bin"]
+        event["dominant_non_dc_bin"] = 512 if original != 512 else 511
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
     def test_impossible_spectral_centroid_is_rejected(self):
         wave = parse_pcm16_wav(make_wav([0] * LONG_FRAME_SIZE))
         changed = copy.deepcopy(build_multiresolution_percept(wave))
         centroid = changed["percept"]["channels"][0]["long_spectral"]["events"][0]["spectral_centroid_bin"]
         centroid["numerator"] = "1"
         centroid["denominator"] = "0"
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_centroid_denominator_totals_match_aggregate_power(self):
+        wave = parse_pcm16_wav(make_wav([1, -2, 3, -4] * 300))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        centroid = changed["percept"]["channels"][0]["long_spectral"]["events"][0]["spectral_centroid_bin"]
+        centroid["denominator"] = str(int(centroid["denominator"]) + 1)
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
@@ -176,6 +193,16 @@ class MultiResolutionTests(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_strongest_transient_selection_cannot_be_omitted(self):
+        samples = [0] * 512 + [12000] * 512
+        wave = parse_pcm16_wav(make_wav(samples))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        transient = changed["percept"]["channels"][0]["transient"]
+        self.assertGreater(transient["candidate_count"], 0)
+        transient["strongest_candidates"] = []
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
     def test_channel_energy_identities_are_cross_checked(self):
         interleaved = []
         for index in range(600):
@@ -185,6 +212,27 @@ class MultiResolutionTests(unittest.TestCase):
         changed = copy.deepcopy(build_multiresolution_percept(wave))
         relation = changed["percept"]["channel_relationships"][0]
         relation["difference_sum_squares"] = str(int(relation["difference_sum_squares"]) + 1)
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_channel_energy_is_consistent_across_multiple_pairs(self):
+        interleaved = []
+        for index in range(256):
+            value = (index % 31) - 15
+            interleaved.extend((value, value * 2, -value))
+        wave = parse_pcm16_wav(make_wav(interleaved, channels=3))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        relation = changed["percept"]["channel_relationships"][1]
+        dot = int(relation["dot_product"])
+        left_energy = int(relation["left_sum_squares"]) + 1
+        right_energy = int(relation["right_sum_squares"])
+        relation["left_sum_squares"] = str(left_energy)
+        relation["difference_sum_squares"] = str(left_energy + right_energy - 2 * dot)
+        relation["sum_sum_squares"] = str(left_energy + right_energy + 2 * dot)
+        relation["zero_lag_correlation_squared"] = {
+            "numerator": str(dot * dot),
+            "denominator": str(left_energy * right_energy),
+        }
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
