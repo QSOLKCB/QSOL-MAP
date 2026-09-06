@@ -14,7 +14,10 @@ from .tables import (
 from .v02_tables import LONG_FRAME_SIZE, LONG_TOP_K, LONG_WINDOW_WEIGHTS
 
 
-_original_validate_percept_core = _core._validate_percept_core
+_ORIGINAL_VALIDATOR_ATTR = "_qsol_map_v02_original_validate_percept_core"
+if not hasattr(_core, _ORIGINAL_VALIDATOR_ATTR):
+    setattr(_core, _ORIGINAL_VALIDATOR_ATTR, _core._validate_percept_core)
+_original_validate_percept_core = getattr(_core, _ORIGINAL_VALIDATOR_ATTR)
 _LONG_WINDOW_SQUARE_PREFIX = [0]
 for _weight in LONG_WINDOW_WEIGHTS:
     _LONG_WINDOW_SQUARE_PREFIX.append(
@@ -59,10 +62,10 @@ def _matrix_rank(matrix: list[list[int]]) -> int:
     return rank
 
 
-def _relationship_gram_rank(percept: dict) -> int | None:
+def _relationship_gram_matrix(percept: dict) -> list[list[int]] | None:
     channel_count = percept["source"]["channels"]
     if channel_count <= 1:
-        return 0
+        return []
     gram = [[0] * channel_count for _ in range(channel_count)]
     energies: dict[int, int] = {}
     for relation in percept["channel_relationships"]:
@@ -73,14 +76,23 @@ def _relationship_gram_rank(percept: dict) -> int | None:
         right_energy = _core._safe_decimal_int(relation["right_sum_squares"])
         if dot is None or left_energy is None or right_energy is None:
             return None
-        energies[left] = left_energy
-        energies[right] = right_energy
+        for channel_index, energy in ((left, left_energy), (right, right_energy)):
+            if channel_index in energies and energies[channel_index] != energy:
+                return None
+            energies[channel_index] = energy
         gram[left][right] = dot
         gram[right][left] = dot
     if len(energies) != channel_count:
         return None
     for channel_index, energy in energies.items():
         gram[channel_index][channel_index] = energy
+    return gram
+
+
+def _relationship_gram_rank(percept: dict) -> int | None:
+    gram = _relationship_gram_matrix(percept)
+    if gram is None:
+        return None
     return _matrix_rank(gram)
 
 
@@ -190,6 +202,76 @@ def _single_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     return True
 
 
+def _two_sample_vectors(energy: int) -> list[tuple[int, int]]:
+    """Enumerate exact PCM16 vectors with the requested two-sample energy."""
+    if energy < 0 or energy > 2 * _PCM16_SQUARE_MAX:
+        return []
+    lower = -(1 << 15)
+    upper = (1 << 15) - 1
+    limit = min(isqrt(energy), 1 << 15)
+    vectors: list[tuple[int, int]] = []
+    for first in range(max(lower, -limit), min(upper, limit) + 1):
+        remainder = energy - first * first
+        second_magnitude = isqrt(remainder)
+        if second_magnitude * second_magnitude != remainder:
+            continue
+        if second_magnitude == 0:
+            second_values = (0,)
+        else:
+            second_values = (-second_magnitude, second_magnitude)
+        for second in second_values:
+            if lower <= second <= upper:
+                vectors.append((first, second))
+    return vectors
+
+
+def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
+    """Require an exact PCM16 factorization for two-frame channel Gram data."""
+    if percept["source"]["frame_count"] != 2:
+        return True
+    channel_count = percept["source"]["channels"]
+    if channel_count <= 1:
+        return True
+    gram = _relationship_gram_matrix(percept)
+    if gram is None:
+        return False
+
+    by_energy: dict[int, list[tuple[int, int]]] = {}
+    candidates: list[list[tuple[int, int]]] = []
+    for channel_index in range(channel_count):
+        energy = gram[channel_index][channel_index]
+        if energy not in by_energy:
+            by_energy[energy] = _two_sample_vectors(energy)
+        channel_candidates = by_energy[energy]
+        if not channel_candidates:
+            return False
+        candidates.append(channel_candidates)
+
+    order = sorted(range(channel_count), key=lambda index: len(candidates[index]))
+    assigned: dict[int, tuple[int, int]] = {}
+
+    def search(position: int) -> bool:
+        if position == len(order):
+            return True
+        channel_index = order[position]
+        for vector in candidates[channel_index]:
+            compatible = True
+            for other_index, other_vector in assigned.items():
+                dot = vector[0] * other_vector[0] + vector[1] * other_vector[1]
+                if dot != gram[channel_index][other_index]:
+                    compatible = False
+                    break
+            if not compatible:
+                continue
+            assigned[channel_index] = vector
+            if search(position + 1):
+                return True
+            del assigned[channel_index]
+        return False
+
+    return search(0)
+
+
 def _validate_percept_core(percept: object) -> bool:
     """Run core validation plus source-sized feasibility and energy bounds."""
     if not _original_validate_percept_core(percept):
@@ -210,6 +292,8 @@ def _validate_percept_core(percept: object) -> bool:
     if gram_rank is None or gram_rank > frame_count:
         return False
     if not _single_sample_relationships_are_integer_realizable(percept):
+        return False
+    if not _two_sample_relationships_are_integer_realizable(percept):
         return False
 
     for channel in percept["channels"]:
@@ -259,6 +343,8 @@ def _validate_percept_core(percept: object) -> bool:
         if positive_delta_sum > positive_delta_sum_bound:
             return False
         if maximum_positive_delta > maximum_positive_delta_bound:
+            return False
+        if maximum_positive_delta == 0 and positive_delta_sum != 0:
             return False
         if short_event_count < 2 and (
             positive_delta_sum != 0 or maximum_positive_delta != 0
