@@ -462,7 +462,14 @@ def _validate_long_event(event: object, index: int) -> bool:
     dominant = event["dominant_non_dc_bin"]
     if not _plain_int(dominant) or not 1 <= dominant <= LONG_FRAME_SIZE // 2:
         return False
-    return _validate_top_components(event["top_components"])
+    components = event["top_components"]
+    if not _validate_top_components(components):
+        return False
+    strongest_non_dc = next(
+        (component["bin"] for component in components if component["bin"] != 0),
+        None,
+    )
+    return strongest_non_dc is not None and dominant == strongest_non_dc
 
 
 def _validate_transient(value: object, short_event_count: int) -> bool:
@@ -483,7 +490,7 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
     if maximum_positive_delta > positive_delta_sum:
         return False
     candidates = value["strongest_candidates"]
-    if not isinstance(candidates, list) or len(candidates) > min(MAX_TRANSIENT_EVENTS, count):
+    if not isinstance(candidates, list) or len(candidates) != min(MAX_TRANSIENT_EVENTS, count):
         return False
 
     seen: set[int] = set()
@@ -582,6 +589,14 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
         return False
     if not all(_validate_long_event(event, event_index) for event_index, event in enumerate(events)):
         return False
+    centroid_denominator_total = 0
+    for event in events:
+        denominator = _safe_decimal_int(event["spectral_centroid_bin"]["denominator"])
+        if denominator is None:
+            return False
+        centroid_denominator_total += denominator
+    if centroid_denominator_total != sum(aggregate_values):
+        return False
     short_event_count = (frame_count + 128 - 1) // 128
     return _validate_transient(channel["transient"], short_event_count)
 
@@ -591,6 +606,7 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
     if not isinstance(value, list) or len(value) != expected_pairs:
         return False
     expected = [(i, j) for i in range(channel_count) for j in range(i + 1, channel_count)]
+    channel_energies: dict[int, int] = {}
     for relation, (left, right) in zip(value, expected):
         if not _exact_keys(
             relation,
@@ -621,6 +637,10 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
         sum_energy = _safe_decimal_int(relation["sum_sum_squares"])
         if None in (dot, left_energy, right_energy, difference_energy, sum_energy):
             return False
+        for channel_index, energy in ((left, left_energy), (right, right_energy)):
+            if channel_index in channel_energies and channel_energies[channel_index] != energy:
+                return False
+            channel_energies[channel_index] = energy
         expected_sign = 1 if dot > 0 else -1 if dot < 0 else 0
         if relation["dot_product_sign"] != expected_sign:
             return False
