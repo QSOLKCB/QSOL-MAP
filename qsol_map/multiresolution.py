@@ -11,6 +11,7 @@ from .integer_checks import (
     _sum_of_two_squares_residues_possible,
     _three_sample_vectors,
 )
+from .mono_constraints import _three_sample_window_vectors
 from .pcm_constraints import _small_window_energy_is_realizable
 from .tables import (
     FRAME_SIZE as SHORT_FRAME_SIZE,
@@ -332,12 +333,32 @@ def _sum_of_three_squares_possible(energy: int) -> bool:
 
 
 def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
-    """Require joint PCM16 triples matching Gram data and exact long energies."""
+    """Check mono window feasibility or joint PCM16 triples and long energies."""
     if percept["source"]["frame_count"] != 3:
         return True
     channel_count = percept["source"]["channels"]
-    if channel_count <= 1:
-        return True
+    if channel_count == 1:
+        spectral = percept["channels"][0]["long_spectral"]
+        events = spectral["events"]
+        if len(events) != 1:
+            return False
+        energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        if energy is None or not 0 <= energy <= 14 * _PCM16_SQUARE_MAX:
+            return False
+        # One event makes these aggregate endpoints exact frame powers.
+        # DC/Nyquist coefficients have the exact common scale Q15_ONE**10.
+        scale = Q15_ONE ** _LONG_FFT_STAGE_COUNT
+        magnitudes: list[int] = []
+        for endpoint in (0, LONG_FRAME_SIZE // 2):
+            power = _core._safe_decimal_int(spectral["aggregate_power_by_bin"][endpoint])
+            if power is None:
+                return False
+            root = isqrt(power)
+            magnitude, remainder = divmod(root, scale)
+            if root * root != power or remainder:
+                return False
+            magnitudes.append(magnitude)
+        return bool(_three_sample_window_vectors(energy, *magnitudes))
     gram = _relationship_gram_matrix(percept)
     if gram is None:
         return False
