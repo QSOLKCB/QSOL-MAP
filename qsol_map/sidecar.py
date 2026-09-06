@@ -109,12 +109,22 @@ class _ExactUTF8TextSink:
                 "sidecar text stream must be StringIO or expose a writable binary buffer"
             )
 
-    def write(self, text: str):
+    def write(self, text: str) -> int:
         if not isinstance(text, str):
             raise TypeError("sidecar writer accepts text records only")
-        if self._binary is not None:
-            return self._binary.write(text.encode("utf-8"))
-        return self._stream.write(text)
+        # A receipt must never describe bytes that a legal short write dropped.
+        # memoryview slices avoid copying the whole remaining record on every
+        # partial binary write. Return a character count for this text API.
+        payload = memoryview(text.encode("utf-8")) if self._binary is not None else text
+        destination = self._binary if self._binary is not None else self._stream
+        offset = 0
+        while offset < len(payload):
+            remaining = len(payload) - offset
+            written = destination.write(payload[offset:])
+            if type(written) is not int or not 0 < written <= remaining:
+                raise OSError("sidecar destination did not make valid write progress")
+            offset += written
+        return len(text)
 
 
 class _ExactUTF8LineReader:

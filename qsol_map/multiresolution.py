@@ -6,6 +6,11 @@ from fractions import Fraction
 from math import isqrt
 
 from . import multiresolution_core as _core
+from .integer_checks import (
+    _joint_vectors_match_gram,
+    _sum_of_two_squares_residues_possible,
+    _three_sample_vectors,
+)
 from .pcm_constraints import _small_window_energy_is_realizable
 from .tables import (
     FRAME_SIZE as SHORT_FRAME_SIZE,
@@ -150,6 +155,12 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
         if parsed is None:
             return False
         aggregate.append(parsed)
+
+    # With one event, every aggregate entry is one integer complex power,
+    # including omitted interior bins. Use bounded necessary two-square
+    # constraints rather than unbounded factorization of large FFT integers.
+    if any(not _sum_of_two_squares_residues_possible(power) for power in aggregate):
+        return False
 
     # For a real-input FFT, DC and Nyquist have zero imaginary part. With one
     # long event the aggregate row is the exact frame-power row, so endpoint
@@ -321,7 +332,7 @@ def _sum_of_three_squares_possible(energy: int) -> bool:
 
 
 def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
-    """Reject three-frame Gram diagonals that no integer PCM vector can realize."""
+    """Require joint PCM16 triples matching Gram data and exact long energies."""
     if percept["source"]["frame_count"] != 3:
         return True
     channel_count = percept["source"]["channels"]
@@ -330,10 +341,26 @@ def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     gram = _relationship_gram_matrix(percept)
     if gram is None:
         return False
-    return all(
-        _sum_of_three_squares_possible(gram[index][index])
-        for index in range(channel_count)
-    )
+
+    by_energy: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+    candidates: list[list[tuple[int, int, int]]] = []
+    for index in range(channel_count):
+        energy = gram[index][index]
+        if not _sum_of_three_squares_possible(energy):
+            return False
+        events = percept["channels"][index]["long_spectral"]["events"]
+        if len(events) != 1:
+            return False
+        windowed_energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        if windowed_energy is None:
+            return False
+        key = (energy, windowed_energy)
+        if key not in by_energy:
+            by_energy[key] = _three_sample_vectors(*key)
+        if not by_energy[key]:
+            return False
+        candidates.append(by_energy[key])
+    return _joint_vectors_match_gram(gram, candidates)
 
 
 def _validate_percept_core(percept: object) -> bool:
