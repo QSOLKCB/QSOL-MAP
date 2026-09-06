@@ -45,6 +45,7 @@ The v0.2 profile imports the frozen v0.1 result and adds:
 
 - a deterministic 1024-sample / 512-hop long spectral reference;
 - an exact published normative quarter-wave Q15 table plus deterministic full-table reconstruction rule;
+- the complete normative long FFT algorithm in specification section 4.1: ten-bit input reversal, ten radix-2 stage widths, twiddle-index schedule, exact scaled butterflies, and ascending retained bins 0..512;
 - independent long complex/power matrix commitments;
 - explicit represented-frequency support and 20 kHz / 40 kHz reference regions;
 - no psychoacoustic low-pass filtering;
@@ -58,6 +59,8 @@ The v0.2 profile imports the frozen v0.1 result and adds:
 For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero. Candidate energies and summary totals are bounded by the source-sized frozen short-window PCM16 maxima. If fewer than two short frames exist, both transient summary totals are zero. When more than 16 candidates exist, omitted candidates still contribute at least one positive integer unit each to `positive_delta_sum`.
 
 The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, applies short-source integer realizability checks, and for two-frame multichannel sources requires feasible PCM vectors to reproduce the exact declared long-window energy.
+
+One- and two-sample long windows, including mono sources and source tails, require exact energies `x^2` and `x^2 + 4*y^2` respectively for PCM16 integers. The same rule applies independently to previous/current short frames reported by transient candidates. Bounds for longer windows are not a complete proof of integer realizability; full sidecar verification reconstructs actual PCM evidence.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
@@ -77,7 +80,7 @@ source bytes
 
 Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. File-backed verification must inspect exact UTF-8/LF bytes before text newline translation; CRLF is not canonical.
 
-The public sidecar writer only accepts an envelope that exactly matches deterministic v0.2 analysis rebuilt from the supplied WAV and only writes to a provably empty seekable destination positioned at zero.
+The public sidecar writer first validates the `PCM16Wave` immutable tuple-of-tuples layout, metadata, sample counts and plain PCM16 integers, and hashes the actual samples in frame-major/channel-order signed little-endian form. The recomputed digest must equal `pcm_s16le_sha256` before rebuilding analysis or touching the destination. It then requires an envelope exactly matching the rebuilt deterministic v0.2 analysis and a provably empty seekable destination positioned at zero. The original RIFF bytes are not retained by this object, so this check does not recompute `source_sha256`.
 
 ## Source lineage
 

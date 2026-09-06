@@ -119,6 +119,91 @@ Runtime trigonometric evaluation is not part of the canonical profile.
 
 The Python reference uses arbitrary-precision integer arithmetic. No right shift, saturation, float conversion or fixed-width overflow is used in transform identity.
 
+### 4.1 Normative long FFT algorithm
+
+The input to this algorithm is exactly the 1024 integer windowed samples `xw[0..1023]` defined in section 3, including the zero-padded tail. The algorithm does not apply a second window.
+
+First, reverse exactly ten bits of each index, including leading zeros:
+
+```text
+rev10(j) = sum(((j div 2^b) mod 2) * 2^(9-b) for b = 0..9)
+state[j] = (xw[rev10(j)], 0), j = 0..1023
+```
+
+Execute ten radix-2 stages in this exact order:
+
+```text
+width = 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+half = width div 2
+step = 1024 div width
+base = 0, width, 2*width, ..., 1024-width
+ offset = 0..half-1
+ twiddle_index = offset * step
+ left = base + offset
+ right = left + half
+```
+
+For each butterfly, read both input pairs before overwriting either output. With `u = state[left]`, `v = state[right]`, `wr = C[twiddle_index]`, `wi = S[twiddle_index]`, and `q = 32768`, compute:
+
+```text
+tr = v.real * wr - v.imag * wi
+ ti = v.real * wi + v.imag * wr
+state[left]  = (q * u.real + tr, q * u.imag + ti)
+state[right] = (q * u.real - tr, q * u.imag - ti)
+```
+
+All products and sums are exact integers. In particular, the `q` multiplication of the upper input occurs at every stage. There is no division by `q`, no per-stage rounding or normalization, and no final division by 1024 or by `q^10`.
+
+After the last stage, retain `state[0]` through `state[512]` inclusive in ascending natural bin order. Do not apply another bit permutation. These 513 complex pairs form the committed long complex row; each corresponding power is `real^2 + imag^2`.
+
+The following executable reference is normative. `quarter` must be the exact 257 integers in section 4. The conformance suite executes this block and compares complete coefficient rows with the implementation, including asymmetric impulses and a nontrivial integer input.
+
+<!-- BEGIN NORMATIVE LONG FFT -->
+```python
+def long_fft_reference(windowed, quarter):
+    if len(windowed) != 1024 or len(quarter) != 257:
+        raise ValueError("expected 1024 windowed samples and 257 frozen constants")
+
+    def cosine(index):
+        quadrant, offset = divmod(index % 1024, 256)
+        if quadrant == 0:
+            return quarter[offset]
+        if quadrant == 1:
+            return -quarter[256 - offset]
+        if quadrant == 2:
+            return -quarter[offset]
+        return quarter[256 - offset]
+
+    cosines = tuple(cosine(index) for index in range(1024))
+    sines = tuple(-cosines[(256 - index) % 1024] for index in range(1024))
+    state = []
+    for index in range(1024):
+        reversed_index = sum(
+            ((index // (2 ** bit)) % 2) * (2 ** (9 - bit))
+            for bit in range(10)
+        )
+        state.append((windowed[reversed_index], 0))
+
+    for width in (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024):
+        half = width // 2
+        step = 1024 // width
+        for base in range(0, 1024, width):
+            for offset in range(half):
+                index = offset * step
+                wr, wi = cosines[index], sines[index]
+                left, right = base + offset, base + offset + half
+                ur, ui = state[left]
+                vr, vi = state[right]
+                tr = vr * wr - vi * wi
+                ti = vr * wi + vi * wr
+                state[left] = (32768 * ur + tr, 32768 * ui + ti)
+                state[right] = (32768 * ur - tr, 32768 * ui - ti)
+    return tuple(state[:513])
+```
+<!-- END NORMATIVE LONG FFT -->
+
+An impulse with `xw[0] = 1` and all other entries zero produces `(32768^10, 0)` at every retained bin. This scaling is part of the profile. An ordinary normalized or floating-point FFT is not a substitute for this algorithm, even if it uses the same twiddle table.
+
 ## 5. Long-window observations
 
 For each channel and long frame, v0.2 records:
@@ -135,6 +220,8 @@ For a long frame with `a` source samples available before zero padding, exact PC
 ```text
 windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
 ```
+
+When `a = 1`, the energy must additionally equal `x^2` for a signed PCM16 integer `x`. When `a = 2`, it must equal `x^2 + 4*y^2` for signed PCM16 integers `x` and `y`. These exact feasibility checks apply to every channel, including mono sources, and to one- or two-sample tails of longer sources. An upper bound alone does not permit an unattainable integer energy. For longer windows these checks do not claim to solve the full integer realizability problem; full sidecar verification separately reconstructs and binds the actual samples.
 
 The complete complex and power matrices are committed separately with:
 
@@ -198,7 +285,9 @@ Each reported candidate records:
 - exact positive delta;
 - `rise_ratio`.
 
-Each previous/current candidate energy must fit the exact PCM16 maximum implied by the corresponding frozen 256-sample triangular window and source-tail availability. The summary `positive_delta_sum` and `maximum_positive_delta` are likewise bounded by the source-sized short-frame maxima. When the source produces fewer than two short frames, no transition exists and both summary totals are exactly `"0"`.
+Each previous/current candidate energy must fit the exact PCM16 maximum implied by the corresponding frozen 256-sample triangular window and source-tail availability. For either short frame with only one available source sample, energy must be a PCM16 integer square. With two available samples, energy must be `x^2 + 4*y^2` for PCM16 integers, since both triangular windows start with weights 1 and 2. The check uses the availability of each previous/current frame independently and applies to every channel.
+
+The summary `positive_delta_sum` and `maximum_positive_delta` are likewise bounded by the source-sized short-frame maxima. When the source produces fewer than two short frames, no transition exists and both summary totals are exactly `"0"`.
 
 If `T = short_event_count - 1`, every positive delta is at most `maximum_positive_delta`, so:
 
@@ -255,7 +344,7 @@ For short sources, additional integer realizability constraints are identity-bea
 windowed_energy = sample[0]^2 * w[0]^2 + sample[1]^2 * w[1]^2
 ```
 
-with `w[0] = 1` and `w[1] = 2`. A merely bounded but unattainable value is invalid. For a three-frame multi-channel source, every declared channel energy must at minimum satisfy the exact three-square realizability condition.
+with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid. For a three-frame multi-channel source, every declared channel energy must at minimum satisfy the exact three-square realizability condition.
 
 These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
 
@@ -306,8 +395,8 @@ It requires:
 - exact typed integer fields rather than Python Boolean/int equality aliases;
 - canonical matrix/source SHA-256 digests;
 - valid bounded decimal strings;
-- valid long-event structure, source/window energy bounds, finite transform-power bounds, and top-component capacity bounds;
-- valid transient rule structure, arithmetic, source-sized energy bounds, transition-multiplicity bounds, and minimum contributions from omitted candidates;
+- valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
+- valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
 - valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including exact two-frame long-energy compatibility;
 - the final domain-separated percept digest.
 
@@ -355,7 +444,11 @@ Acceptance requires all of the following identity-bearing evidence relationships
 - channel relationships recomputed from reconstructed PCM equal to the compact channel relationships;
 - no missing or extra records, including decode failures after an otherwise valid trailer.
 
-The public sidecar writer accepts an envelope only when rebuilding v0.2 analysis from the supplied WAV produces that exact canonical envelope, so it cannot emit a receipt for evidence that contradicts declared matrix or observation commitments. The destination must be provably empty, seekable, and positioned at byte/character offset zero before the header is written; append-positioned or stale-tail destinations are rejected.
+The public sidecar writer validates the supplied `PCM16Wave` independently before rebuilding analysis or touching its destination. The Python API requires an immutable tuple of channel tuples with exactly the declared channel count and frame count, plain signed PCM16 integer samples, and adapter-valid integer metadata. It recomputes SHA-256 over the samples serialized in frame order, then ascending channel order within each frame, with each sample encoded as signed 16-bit little-endian bytes. This digest must equal `pcm_s16le_sha256`; a stale or directly constructed inconsistent wave raises `ValueError` before any sidecar output or receipt. Hashing uses bounded payload chunks, not a complete duplicate PCM payload.
+
+The writer then accepts an envelope only when rebuilding v0.2 analysis from those validated samples produces that exact canonical envelope, so it cannot emit a receipt for evidence that contradicts declared matrix or observation commitments. The destination must be provably empty, seekable, and positioned at byte/character offset zero before the header is written; append-positioned or stale-tail destinations are rejected.
+
+`PCM16Wave` does not retain the original RIFF container bytes. This writer check therefore validates the sample-payload commitment, not a reconstruction of `source_sha256` or authenticity of the source recording.
 
 The verifier uses bounded row reads and bounded temporary spools rather than constructing complete spectral matrices or unbounded in-memory waveforms.
 

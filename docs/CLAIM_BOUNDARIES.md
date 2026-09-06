@@ -21,7 +21,7 @@ The v0.1 profile remains unchanged by v0.2.
 For an accepted source and `qsol-map-multiresolution-v0.2`, the reference implementation may additionally claim that:
 
 1. the frozen v0.1 percept identity and per-channel v0.1 matrix commitments are carried forward as the short-window reference;
-2. a separate deterministic 1024-sample / 512-hop long-window spectral reference is computed using the exact normative frozen Q15 quarter-wave table and reconstruction rule published in `spec/QSOL-MAP-MULTIRES-v0.2.md`, with exact unbounded-integer Python arithmetic;
+2. a separate deterministic 1024-sample / 512-hop long-window spectral reference is computed using the exact normative frozen Q15 table and complete long FFT algorithm published in `spec/QSOL-MAP-MULTIRES-v0.2.md`, with exact unbounded-integer Python arithmetic;
 3. complete long complex and power matrices receive independent cryptographic commitments;
 4. represented long-window bins are retained up to source Nyquist without a psychoacoustic low-pass filter;
 5. aggregate power is reported in authored `[0,20 kHz)`, `[20,40 kHz)`, and `[40 kHz,Nyquist]` reference regions when such represented bins exist;
@@ -29,11 +29,11 @@ For an accepted source and `qsol-map-multiresolution-v0.2`, the reference implem
 7. a transition from zero previous energy is represented with `rise_ratio: null`, never a zero-denominator rational value;
 8. transient energies and summary totals are bounded by source-sized PCM16/frozen-window maxima, obey transition-multiplicity bounds, and include a minimum positive contribution from candidates omitted beyond the 16 reported strongest events;
 9. exact pairwise channel signal relationships are recorded without downmixing, the complete Gram matrix is jointly feasible with rank no greater than the source frame count, and short sources receive additional integer-realizability checks;
-10. for a two-frame multichannel source, accepted compact observations admit one joint PCM16 vector assignment that matches all declared Gram products and the exact committed long-window weighted energy;
+10. for a two-frame multichannel source, accepted compact observations admit one joint PCM16 vector assignment that matches all declared Gram products and the exact committed long-window weighted energy; mono two-frame sources and one/two-sample long or reported short tails also require exact weighted-energy realizability;
 11. an optional canonical NDJSON sidecar can carry every short and long complex spectral row while remaining separately verified against compact matrix commitments;
 12. accepted sidecars reconstruct exact PCM16 from both profiles, require one shared waveform, bind that waveform to `pcm_s16le_sha256`, rebuild the frozen v0.1 percept identity, and reconstruct transient/channel observations;
 13. sidecar ordering, exact UTF-8/LF line bytes, coefficient arithmetic, receipt hashes and exact typed position fields are checked fail-closed before text newline translation can hide non-canonical CRLF bytes;
-14. the sidecar writer emits evidence only when the supplied envelope exactly equals deterministic v0.2 analysis rebuilt from the supplied WAV and the destination is provably empty, seekable and positioned at zero;
+14. the sidecar writer validates immutable PCM16 sample layout and the recomputed interleaved sample digest before rebuilding the exact v0.2 envelope or touching its provably empty, seekable destination at position zero;
 15. malformed oversized decimal strings are rejected before untrusted integer conversion can escape the verifier contract;
 16. output collisions are rejected before writing, including filesystem aliases created by case folding or Unicode normalization equivalence on target filesystems that treat such spellings as identical;
 17. the v0.2 golden vector protects the current multi-resolution reference behavior.
@@ -75,7 +75,9 @@ It does **not** establish that:
 
 The long transform identity is not defined by an informal phrase such as “Q15 approximation of an exponential.” The versioned v0.2 specification publishes the complete 257-entry normative quarter-wave cosine table and the exact quadrant/sine reconstruction rule that yields every long-transform integer twiddle pair.
 
-Independent producers must use those exact committed integers. No unstated floating-point rounding, truncation, tie-breaking, library trigonometry, or runtime table generation rule is part of the canonical v0.2 identity.
+Section 4.1 defines the full transform schedule: ten-bit input reversal, ten radix-2 stages with widths 2 through 1024, the exact twiddle-index schedule and butterfly equations, per-stage upper-input scaling by 32768, no division or final normalization, and natural-order retained bins 0..512. An executable specification test compares complete coefficient rows with the implementation. A transform using the same twiddles but different scaling or stage arithmetic is not the same profile.
+
+Independent producers must use those exact committed integers and that algorithm. No unstated floating-point rounding, truncation, tie-breaking, library trigonometry, or runtime table generation rule is part of the canonical v0.2 identity.
 
 ## Transient boundary
 
@@ -93,13 +95,17 @@ When `previous == 0`, the ratio is not finite. The canonical representation uses
 
 Candidate energies and summary totals must remain within the maximum possible values implied by PCM16 input, the frozen short triangular window and the source tail. If fewer than two short frames exist, there is no transition and both summary totals are zero. Across `T` transitions, `positive_delta_sum` cannot exceed `T * maximum_positive_delta`. When `candidate_count` exceeds the 16 reported strongest candidates, every omitted candidate is still a strict positive integer rise and contributes at least one unit to the minimum feasible positive-delta sum.
 
+Each reported previous/current short frame with one available sample requires energy `x^2`, and with two available samples requires `x^2 + 4*y^2`, for signed PCM16 integers. These tail-specific checks apply independently of channel count and reject unattainable energies even below the generic upper bound.
+
 ## Channel boundary
 
 Channels are never implicitly mixed in the canonical v0.1 or v0.2 paths.
 
 Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. The complete Gram matrix must be positive semidefinite and have rank at most `frame_count`, so accepted relationships can arise from vectors in the declared sample space.
 
-Short sources receive additional integer-realizability constraints. In particular, a two-frame multichannel compact percept must admit one joint set of PCM16 integer vectors satisfying the complete Gram data, and those same feasible vectors must reproduce each channel's declared long-window energy under the committed first two long-window weights. A merely bounded but unattainable energy is invalid.
+Short sources receive additional integer-realizability constraints. In particular, a two-frame multichannel compact percept must admit one joint set of PCM16 integer vectors satisfying the complete Gram data, and those same feasible vectors must reproduce each channel's declared long-window energy under the committed first two long-window weights. A two-frame mono source must still admit PCM16 integers realizing that weighted energy, despite having no channel-pair records. All one/two-sample long tails receive the same exact energy checks. A merely bounded but unattainable energy is invalid.
+
+These compact checks are necessary constraints, not a complete proof that every arbitrary-length compact observation has an integer waveform realization. Full sidecar verification separately reconstructs and binds actual PCM samples.
 
 They do not by themselves establish acoustic scene geometry or spatial perception.
 
@@ -113,13 +119,15 @@ Canonical sidecar records are exact UTF-8 bytes terminated by one LF byte. CRLF 
 
 A decode failure is invalid evidence even if it occurs after an otherwise valid trailer. Verification uses bounded reads and bounded temporary spools.
 
-The public writer independently rebuilds deterministic v0.2 analysis from the supplied WAV and refuses to emit a sidecar when the supplied envelope differs, including a rebound matrix commitment with a recomputed outer digest. It also refuses append-positioned or stale-tail destinations by requiring a provably empty seekable stream positioned at zero.
+The public writer independently validates `PCM16Wave` metadata, immutable tuple-of-tuples dimensions and plain signed PCM16 values, then recomputes `pcm_s16le_sha256` from frame-major/channel-order signed little-endian sample bytes in bounded chunks. A stale or directly constructed inconsistent wave is rejected before rebuilding analysis or touching the destination. It then rebuilds deterministic v0.2 analysis and refuses to emit a sidecar when the supplied envelope differs, including a rebound matrix commitment with a recomputed outer digest. It also refuses append-positioned or stale-tail destinations by requiring a provably empty seekable stream positioned at zero.
+
+The original RIFF bytes are not retained by `PCM16Wave`. Recomputing its sample digest therefore does not recompute the separate `source_sha256` container hash or establish source authenticity.
 
 A valid sidecar proves conformance to the declared serialization/commitment/reconstruction relationship. It does not prove that the source recording is authentic or scientifically meaningful.
 
 ## Determinism boundary
 
-The current profiles are versioned Python references. They use exact integer signal arithmetic after parsing. The v0.2 long twiddle integers and reconstruction rule are now fully published as identity-bearing protocol data, so an independent implementation can reproduce that portion without guessing a rounding convention.
+The current profiles are versioned Python references. They use exact integer signal arithmetic after parsing. The v0.2 long twiddle integers, reconstruction rule and full FFT algorithm are published as identity-bearing protocol data. Executing the normative algorithm in conformance tests guards against documentation/implementation drift; it does not establish universal correctness of every independent implementation.
 
 A future implementation may claim conformance only after passing frozen vectors for the relevant profile, including:
 - input parsing;
@@ -138,11 +146,12 @@ Important rules include:
 - Boolean values are not accepted where integer fields are required;
 - identity-bearing decimal strings are canonical and length-bounded before integer conversion;
 - exact typed structures use canonical-byte comparison where ordinary Python equality would blur `False` with `0` or `True` with `1`;
-- long and short-frame authored energies are bounded by the source/PCM/window contract and additional exact short-source feasibility constraints where available;
+- long and short-frame authored energies are bounded by the source/PCM/window contract and additional exact short-source feasibility constraints, including one/two-sample mono windows and tails;
 - long spectral power and top-component claims must fit finite transform/ranking bounds;
 - transient summaries must account for transition multiplicity and omitted candidates;
 - channel relationships must be jointly feasible in the declared sample dimension;
 - invalid structural data is rejected even when an attacker recomputes outer hashes;
+- writer-side sample commitments are recomputed rather than trusted from the input object;
 - file-backed sidecar verification preserves exact line bytes rather than accepting CRLF hidden by newline translation;
 - output destinations are checked by filesystem identity, including case-equivalent and Unicode-normalization-equivalent initially nonexistent names on target filesystems that alias those spellings.
 

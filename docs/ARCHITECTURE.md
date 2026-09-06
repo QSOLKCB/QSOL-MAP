@@ -179,7 +179,9 @@ The aggregate profile binds the frozen v0.1 percept hash and per-channel v0.1 ma
 - frozen Q15 1024-point twiddles;
 - exact unbounded-integer Python reference arithmetic.
 
-The complete identity-bearing quarter-wave Q15 table and the exact quadrant/sine reconstruction rule are normative in `spec/QSOL-MAP-MULTIRES-v0.2.md`. The long transform does not depend on an unstated rounding or runtime trigonometric convention.
+The complete identity-bearing quarter-wave Q15 table and the exact quadrant/sine reconstruction rule are normative in `spec/QSOL-MAP-MULTIRES-v0.2.md`. Section 4.1 also defines the entire long FFT: ten-bit input reversal, stage widths 2 through 1024, `offset * (1024 / width)` twiddle indices, and exact radix-2 butterfly equations. Each butterfly multiplies the upper input by 32768 and combines it with the lower input times the committed twiddle. There is no per-stage division or final normalization. The output retains bins 0..512 in ascending natural order. The conformance suite executes the published algorithm and checks complete coefficient rows against the implementation.
+
+The long transform does not depend on an unstated rounding, stage schedule, or runtime trigonometric convention.
 
 The long profile provides finer frequency-bin spacing while the short profile preserves finer temporal sampling. QSOL-MAP does not claim that either resolution is a complete perceptual model.
 
@@ -219,6 +221,8 @@ For a transition from zero previous energy, `rise_ratio` is `null` rather than a
 
 Candidate energies and summary totals must fit the source-sized PCM16 maximum induced by the frozen 256-sample triangular window. If fewer than two short frames exist, no transition can be formed and both transient summary totals are zero. The total positive delta is bounded by transition multiplicity, and candidates omitted beyond the 16 reported strongest entries still contribute at least one positive integer unit each to the summary.
 
+Each reported previous/current short frame is also checked against its own source-tail availability. One available sample requires energy `x^2`; two require `x^2 + 4*y^2`, with signed PCM16 integers. The shared exact small-window check is used for long windows as well, so mono sources and tails do not bypass energy feasibility.
+
 This is a deterministic L1 event rule, not a validated model of human onset perception.
 
 ## 9. Channel relationships
@@ -234,7 +238,7 @@ For each pair `i < j`, v0.2 records exact full-source integer quantities includi
 
 The complete channel Gram matrix must be positive semidefinite and its exact rank must not exceed the source frame count. This preserves joint feasibility in the actual sample-dimensional space, rather than validating only pairwise arithmetic.
 
-Short sources have additional integer-realizability checks. For two-frame multichannel sources, one joint feasible PCM16 vector assignment must satisfy all Gram products and reproduce each channel's exact long-window weighted energy under the committed weights.
+Short sources have additional integer-realizability checks. For two-frame multichannel sources, one joint feasible PCM16 vector assignment must satisfy all Gram products and reproduce each channel's exact long-window weighted energy under the committed weights. Two-frame mono sources have no Gram records but must still admit PCM16 samples with that weighted energy. Exact one/two-sample long-tail checks apply independently of total source length and channel count.
 
 These are signal relationships. They do not infer speaker geometry, source direction, or perceived stereo width.
 
@@ -275,7 +279,9 @@ The sidecar verifier checks:
 - channel relationships rebuilt from recovered PCM;
 - no missing, extra or decode-failed records.
 
-The public sidecar writer first rebuilds the deterministic v0.2 percept from the supplied WAV and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments. It also requires an empty seekable destination at position zero, preventing appended or stale-tail sidecars from receiving a successful receipt.
+Before rebuilding analysis or touching output, the public sidecar writer validates the supplied `PCM16Wave` immutable tuple-of-tuples layout, metadata, channel/frame counts and plain signed PCM16 samples. It hashes the actual sample payload in frame-major order with ascending channels within each frame and signed 16-bit little-endian encoding. The recomputed digest must match `pcm_s16le_sha256`; a stale digest cannot become trusted merely by rebuilding an envelope that copies it. This hash pass uses bounded payload chunks.
+
+The writer then rebuilds the deterministic v0.2 percept from those validated samples and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments. It also requires an empty seekable destination at position zero, preventing appended or stale-tail sidecars from receiving a successful receipt. Since `PCM16Wave` does not retain original RIFF bytes, this check does not recompute the separate `source_sha256` container commitment.
 
 The verifier uses bounded temporary spools for reconstructed PCM instead of materializing complete spectral matrices or an unbounded waveform in memory.
 
@@ -289,7 +295,7 @@ Identity-bearing decimal strings are bounded before conversion to Python integer
 
 Boolean values are not accepted where schema fields require integers, even though Python considers `False == 0` and `True == 1` in ordinary equality.
 
-Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions.
+Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions. The one/two-sample energy checks do not claim a complete compact-only integer feasibility proof for arbitrary longer windows; full sidecar verification reconstructs the actual PCM evidence.
 
 Canonical byte comparison is used where exact typed structure matters.
 

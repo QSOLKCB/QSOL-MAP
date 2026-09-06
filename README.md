@@ -71,7 +71,7 @@ v0.2 imports the frozen v0.1 evidence and adds:
 - strict sidecar ordering, arithmetic, matrix-commitment, receipt, and reconstructed-evidence verification;
 - a frozen v0.2 golden percept vector.
 
-The complete identity-bearing v0.2 quarter-wave Q15 twiddle table and its exact full-table reconstruction rule are published in `spec/QSOL-MAP-MULTIRES-v0.2.md`; independent producers do not infer rounding or generation behavior from the Python source.
+The complete identity-bearing v0.2 quarter-wave Q15 table, full-table reconstruction rule, and long FFT algorithm are published in `spec/QSOL-MAP-MULTIRES-v0.2.md`. Section 4.1 specifies ten-bit input reversal, all ten radix-2 stages, twiddle-index scheduling, exact scaled butterflies and retained-bin ordering, with no per-stage division or final normalization. An executable specification regression compares complete coefficient rows against the implementation.
 
 The compact verifier bounds long/transient energies by the exact source-sized PCM16/window maxima, checks short-source integer realizability, and requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count.
 
@@ -133,6 +133,8 @@ For a transition from zero previous energy, `rise_ratio` is `null`. A finite rat
 
 Candidate energies and summary totals are source-sized against the frozen short triangular window. If the source produces fewer than two short frames, no transition exists and both summary totals are zero. The compact verifier also accounts for omitted candidates beyond the 16 reported strongest events when checking the positive-delta summary.
 
+Each reported previous/current short tail containing one sample must have energy `x^2`; a two-sample tail must have energy `x^2 + 4*y^2`, for signed PCM16 integers. The same exact energy checks cover one/two-sample long windows, including mono sources and tails of longer recordings. An energy below the maximum can still be impossible and is rejected.
+
 This is an authored deterministic signal event, not a claim of equivalence to human onset perception.
 
 ## Channel relationships
@@ -147,7 +149,7 @@ For every channel pair `i < j`, v0.2 records exact quantities including:
 - `left + right` energy;
 - exact zero-lag correlation squared when both channel energies are non-zero.
 
-The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count. Very short sources receive additional integer-realizability checks; for two-frame multichannel sources the exact feasible PCM assignment must also reproduce the declared long-window energy.
+The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count. Very short sources receive additional integer-realizability checks; for two-frame multichannel sources the exact feasible PCM assignment must also reproduce the declared long-window energy. Two-frame mono sources have no pairwise records, but must still admit integer PCM16 samples realizing their weighted energy.
 
 These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
 
@@ -193,7 +195,9 @@ The verifier checks:
 - channel relationships rebuilt from reconstructed PCM;
 - missing, extra, malformed, or decode-failed records.
 
-The public writer independently rebuilds the deterministic v0.2 percept from the supplied WAV and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest. It also requires an empty, seekable destination positioned at zero so it cannot append a valid receipt to stale content.
+The public writer validates the supplied `PCM16Wave` immutable tuple-of-tuples layout, declared channel/frame counts, metadata and plain signed PCM16 samples. Before rebuilding analysis or touching output, it recomputes the actual interleaved signed little-endian PCM SHA-256 in bounded chunks and requires equality with `pcm_s16le_sha256`. Directly constructed or stale wave objects cannot receive a receipt merely because rebuilding their envelope copies the same incorrect hash.
+
+The writer then independently rebuilds the deterministic v0.2 percept and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest. It also requires an empty, seekable destination positioned at zero so it cannot append a valid receipt to stale content. The original RIFF container bytes are not retained by `PCM16Wave`, so this writer-side check does not recompute the separate `source_sha256` commitment.
 
 The verifier uses bounded temporary spools for reconstruction rather than building complete spectral matrices or an unbounded waveform in memory.
 
@@ -251,7 +255,7 @@ v0.2 bounds untrusted decimal-string length before converting it to Python integ
 
 The verification path also rejects Boolean values where canonical schemas require integers. Ordinary Python equality treats `False == 0` and `True == 1`; QSOL-MAP does not allow that language behavior to blur protocol types.
 
-Source-sized PCM/window energy bounds, exact short-source integer feasibility, transform-power bounds, transient-summary constraints, and exact channel Gram-rank feasibility reject compact observations that cannot arise from the declared PCM16 source even when outer hashes are recomputed.
+Source-sized PCM/window energy bounds, exact short-source integer feasibility, transform-power bounds, transient-summary constraints, and exact channel Gram-rank feasibility reject contradictory compact observations even when outer hashes are recomputed. These necessary checks are not a complete compact-only integer feasibility proof for arbitrary source lengths; full sidecar verification separately reconstructs and binds the actual PCM evidence.
 
 ## Golden vectors
 
@@ -285,10 +289,12 @@ Coverage includes:
 - high-sample-rate represented-bin retention;
 - silence-to-signal transient handling and source-sized transient bounds;
 - exact and jointly feasible channel relationships;
+- one/two-sample mono and tail energy feasibility, including signed PCM16 limits;
 - malformed/oversized verifier input;
 - sidecar round-trip and reconstructed-evidence tamper rejection;
 - Boolean sidecar position rejection even after receipt recomputation;
-- sidecar writer rejection of envelopes that contradict the supplied WAV;
+- sidecar writer rejection of stale PCM digests, malformed direct wave objects, and envelopes that contradict the supplied WAV;
+- execution of the normative long FFT algorithm against complete reference coefficient rows;
 - canonical LF sidecar verification before text newline translation;
 - CLI v0.2 and sidecar round-trips;
 - filesystem output-alias rejection including normalization-equivalent names;

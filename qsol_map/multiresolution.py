@@ -6,6 +6,7 @@ from fractions import Fraction
 from math import isqrt
 
 from . import multiresolution_core as _core
+from .pcm_constraints import _small_window_energy_is_realizable
 from .tables import (
     FRAME_SIZE as SHORT_FRAME_SIZE,
     HOP_SIZE as SHORT_HOP_SIZE,
@@ -243,12 +244,16 @@ def _two_sample_vectors(energy: int) -> list[tuple[int, int]]:
 
 
 def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
-    """Require exact PCM16 vectors matching both Gram data and long energy."""
+    """Require PCM16 long-energy feasibility, plus joint Gram data when present."""
     if percept["source"]["frame_count"] != 2:
         return True
     channel_count = percept["source"]["channels"]
-    if channel_count <= 1:
-        return True
+    if channel_count == 1:
+        events = percept["channels"][0]["long_spectral"]["events"]
+        if len(events) != 1:
+            return False
+        energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        return energy is not None and _small_window_energy_is_realizable(energy, 2)
     gram = _relationship_gram_matrix(percept)
     if gram is None:
         return False
@@ -378,6 +383,8 @@ def _validate_percept_core(percept: object) -> bool:
             )
             if windowed_energy > max_windowed_energy:
                 return False
+            if not _small_window_energy_is_realizable(windowed_energy, available):
+                return False
             if relationship_energies is not None:
                 source_energy = relationship_energies[channel_index]
                 if windowed_energy > source_energy * _LONG_WINDOW_WEIGHT_SQUARE_MAX:
@@ -471,6 +478,15 @@ def _validate_percept_core(percept: object) -> bool:
                 return False
             if current_energy > _short_frame_energy_bound(frame_count, frame_index):
                 return False
+            for index, energy in (
+                (frame_index - 1, previous_energy),
+                (frame_index, current_energy),
+            ):
+                available = min(
+                    SHORT_FRAME_SIZE, max(0, frame_count - index * SHORT_HOP_SIZE)
+                )
+                if not _small_window_energy_is_realizable(energy, available):
+                    return False
     return True
 
 

@@ -17,6 +17,7 @@
 
 - [x] Add a second long-window spectral profile without changing v0.1.
 - [x] Publish the exact identity-bearing 1024-point Q15 twiddle contract, including the full normative quarter-wave table and deterministic reconstruction rule.
+- [x] Publish the full long FFT algorithm: ten-bit input permutation, radix-2 butterflies, stage widths, twiddle-index schedule, exact scaling and retained-bin ordering, with executable specification conformance coverage.
 - [x] Define optional full spectral sidecar artifacts so compact packets can commit to richer evidence.
 - [x] Add transient/onset observations with an exact reference contract.
 - [x] Add channel relationship and spatial-signal observations without implicit downmixing.
@@ -24,10 +25,11 @@
 - [x] Add an environment-scoped benchmark harness guided by QSOLKCB/OPT without turning performance into a portable claim.
 - [x] Harden verification against oversized decimal strings, Boolean/int ambiguity, output collisions, sidecar tampering and zero-denominator onset ratios.
 - [x] Bind compact long-frame and transient energies to source-sized PCM16/window maxima, require short-source integer realizability, and require channel Gram feasibility including rank no greater than frame count.
+- [x] Require exact one/two-sample long-window energy feasibility for mono and multichannel sources and tails, and for previous/current short-tail energies in transient candidates.
 - [x] Account for omitted transient candidates and transition multiplicity in compact summary verification.
 - [x] Reconstruct short and long sidecar profiles back to one PCM16 waveform and bind it to the PCM digest, frozen v0.1 identity, transient observations and channel relationships.
 - [x] Verify canonical UTF-8/LF sidecar bytes before text newline translation and require empty writer destinations.
-- [x] Require the sidecar writer to emit evidence only for the exact deterministic v0.2 envelope rebuilt from the supplied WAV.
+- [x] Require the sidecar writer to validate immutable PCM16 sample layout and recompute the interleaved PCM digest before rebuilding the exact v0.2 envelope or touching output.
 - [x] Reject output aliases by filesystem identity, including case-equivalent and Unicode-normalization-equivalent names on filesystems that alias those spellings.
 - [x] Freeze a v0.2 golden percept vector while preserving the published v0.1 golden vector.
 
@@ -48,6 +50,8 @@ qsol-map-spectral-sidecar-v0.2
 ```
 
 Sidecar conformance includes exact UTF-8/LF record bytes, exact reconstruction of both spectral profiles to one PCM16 waveform, verification of the reconstructed interleaved PCM SHA-256, rebuild of the frozen v0.1 percept identity, and reconstruction of transient/channel observations.
+
+The full normative long transform is in specification section 4.1. The short-window feasibility checks reject unattainable one/two-sample energies without claiming complete compact-only integer feasibility for arbitrary lengths. Writer-side PCM validation binds the actual sample payload; it cannot recompute the original RIFF container hash from a `PCM16Wave` object that does not retain those bytes.
 
 v0.2 remains Layer 1 deterministic acoustic observation. It does not introduce learned tokenization or semantic interpretation.
 

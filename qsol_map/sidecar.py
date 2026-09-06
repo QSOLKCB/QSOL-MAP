@@ -8,6 +8,7 @@ import threading
 from . import multiresolution as _mr
 from . import sidecar_receipts_core as _receipts_module
 from .canonical import canonical_bytes
+from .pcm_constraints import _validate_wave_pcm_commitment
 
 
 _LINE_LIMIT_LOCK = threading.RLock()
@@ -182,6 +183,7 @@ def write_spectral_sidecar(wave, envelope: dict, stream):
     """Write only evidence that exactly matches the supplied PCM16 waveform."""
     if not _mr.verify_multiresolution_envelope(envelope):
         raise ValueError("sidecar requires a valid v0.2 percept envelope")
+    _validate_wave_pcm_commitment(wave)
     expected = _mr.build_multiresolution_percept(wave)
     try:
         matches = canonical_bytes(envelope) == canonical_bytes(expected)
