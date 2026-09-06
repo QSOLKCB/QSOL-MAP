@@ -120,6 +120,16 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
         if parsed is None:
             return False
         aggregate.append(parsed)
+
+    # For a real-input FFT, DC and Nyquist have zero imaginary part. With one
+    # long event the aggregate row is the exact frame-power row, so endpoint
+    # powers must be perfect squares even when those bins are omitted from the
+    # compact top-component list.
+    for endpoint in (0, len(aggregate) - 1):
+        magnitude = isqrt(aggregate[endpoint])
+        if magnitude * magnitude != aggregate[endpoint]:
+            return False
+
     event = events[0]
     expected_bins = sorted(
         range(len(aggregate)),
@@ -215,6 +225,19 @@ def _validate_percept_core(percept: object) -> bool:
                 _PCM16_SQUARE_MAX * _LONG_WINDOW_SQUARE_PREFIX[available]
             )
             if windowed_energy > max_windowed_energy:
+                return False
+
+            centroid = event["spectral_centroid_bin"]
+            numerator = _core._safe_decimal_int(centroid["numerator"])
+            if numerator is None:
+                return False
+            selected_weighted_power = 0
+            for component in event["top_components"]:
+                power = _core._safe_decimal_int(component["power"])
+                if power is None:
+                    return False
+                selected_weighted_power += component["bin"] * power
+            if numerator < selected_weighted_power:
                 return False
 
     short_event_count = (frame_count + SHORT_HOP_SIZE - 1) // SHORT_HOP_SIZE
