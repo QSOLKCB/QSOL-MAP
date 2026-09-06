@@ -12,6 +12,7 @@ from qsol_map.multiresolution import (
     verify_multiresolution_envelope,
 )
 from qsol_map.sidecar import (
+    SIDECAR_HEADER_DOMAIN,
     SIDECAR_RECEIPT_DOMAIN,
     SIDECAR_RECORDS_DOMAIN,
     _matrix_hasher,
@@ -137,6 +138,23 @@ class MultiResolutionTests(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_top_component_authored_ordering_is_enforced(self):
+        wave = parse_pcm16_wav(make_wav([1, -2, 3, -4] * 300))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        components = changed["percept"]["channels"][0]["long_spectral"]["events"][0]["top_components"]
+        components[0], components[1] = components[1], components[0]
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_impossible_spectral_centroid_is_rejected(self):
+        wave = parse_pcm16_wav(make_wav([0] * LONG_FRAME_SIZE))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        centroid = changed["percept"]["channels"][0]["long_spectral"]["events"][0]["spectral_centroid_bin"]
+        centroid["numerator"] = "1"
+        centroid["denominator"] = "0"
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
     def test_frequency_region_subtotals_are_cross_checked(self):
         samples = [((index * 53 + 17) % 4093) - 2046 for index in range(1408)]
         wave = parse_pcm16_wav(make_wav(samples, sample_rate=96000))
@@ -170,6 +188,30 @@ class MultiResolutionTests(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_correlation_cauchy_bound_is_enforced(self):
+        interleaved = []
+        for index in range(64):
+            interleaved.extend((index, 2 * index))
+        wave = parse_pcm16_wav(make_wav(interleaved, channels=2))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        relation = changed["percept"]["channel_relationships"][0]
+        relation.update(
+            {
+                "dot_product": "4",
+                "dot_product_sign": 1,
+                "left_sum_squares": "1",
+                "right_sum_squares": "9",
+                "difference_sum_squares": "2",
+                "sum_sum_squares": "18",
+                "zero_lag_correlation_squared": {
+                    "numerator": "16",
+                    "denominator": "9",
+                },
+            }
+        )
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
     def test_negative_zero_signed_decimal_is_rejected(self):
         wave = parse_pcm16_wav(make_wav([0] * LONG_FRAME_SIZE))
         changed = copy.deepcopy(build_multiresolution_percept(wave))
@@ -177,6 +219,16 @@ class MultiResolutionTests(unittest.TestCase):
         self.assertEqual(component["real"], "0")
         component["real"] = "-0"
         rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_deeply_nested_compact_envelope_fails_closed(self):
+        wave = parse_pcm16_wav(make_wav([1, -1] * 400))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        nested = 0
+        for _ in range(1500):
+            nested = [nested]
+        changed["percept"]["profile"]["id"] = nested
+        changed["percept_sha256"] = "0" * 64
         self.assertFalse(verify_multiresolution_envelope(changed))
 
     def test_streaming_sidecar_round_trip_and_tamper_rejection(self):
@@ -222,6 +274,41 @@ class MultiResolutionTests(unittest.TestCase):
             for record in records
         )
         self.assertFalse(verify_spectral_sidecar(envelope, io.StringIO(rewritten)))
+
+    def test_sidecar_rows_are_cross_checked_against_compact_aggregates(self):
+        samples = [((index * 23) % 997) - 498 for index in range(900)]
+        wave = parse_pcm16_wav(make_wav(samples, sample_rate=96000))
+        envelope = build_multiresolution_percept(wave)
+        stream = io.StringIO()
+        write_spectral_sidecar(wave, envelope, stream)
+        records = [json.loads(line) for line in stream.getvalue().splitlines()]
+
+        changed = copy.deepcopy(envelope)
+        spectral = changed["percept"]["channels"][0]["long_spectral"]
+        spectral["aggregate_power_by_bin"][0] = str(int(spectral["aggregate_power_by_bin"][0]) + 1)
+        regions = spectral["aggregate_power_by_frequency_region"]
+        regions["below_20khz_reference"] = str(int(regions["below_20khz_reference"]) + 1)
+        rehash(changed)
+
+        header = records[0]
+        header["percept_sha256"] = changed["percept_sha256"]
+        header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
+        trailer = records[-1]
+        trailer["header_sha256"] = header_sha256
+        receipt_core = {
+            "header_sha256": trailer["header_sha256"],
+            "records_sha256": trailer["records_sha256"],
+            "record_count": trailer["record_count"],
+        }
+        trailer["receipt_sha256"] = domain_sha256(
+            SIDECAR_RECEIPT_DOMAIN,
+            canonical_bytes(receipt_core),
+        )
+        rewritten = "".join(
+            canonical_bytes(record).decode("utf-8") + "\n"
+            for record in records
+        )
+        self.assertFalse(verify_spectral_sidecar(changed, io.StringIO(rewritten)))
 
     def test_excessively_nested_sidecar_json_fails_closed(self):
         wave = parse_pcm16_wav(make_wav([1, -1] * 400))
