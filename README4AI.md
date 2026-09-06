@@ -50,9 +50,13 @@ The v0.2 profile imports the frozen v0.1 result and adds:
 - deterministic short-frame energy-rise transient candidates;
 - exact pairwise channel relationships without downmixing;
 - optional canonical NDJSON full-spectral sidecars;
-- strict sidecar ordering, arithmetic, matrix and receipt verification.
+- strict sidecar ordering, arithmetic, matrix and receipt verification;
+- exact sidecar reconstruction of PCM16 from both spectral profiles, requiring identical recovered waveforms;
+- reconstructed PCM SHA-256 binding, frozen-v0.1 percept rebuild, transient rebuild, and channel-relationship rebuild before sidecar acceptance.
 
-For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero.
+For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero. Candidate energies and summary totals are bounded by the source-sized frozen short-window PCM16 maxima. If fewer than two short frames exist, both transient summary totals are zero.
+
+The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, and bounds long-frame energies by the committed PCM16 triangular-window maximum.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
@@ -70,7 +74,9 @@ source bytes
 -> domain-separated percept_sha256
 ```
 
-Optional full spectral evidence is a separately verified sidecar receiver. It does not replace the compact percept identity.
+Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. It does not replace the compact percept identity.
+
+The public sidecar writer only accepts an envelope that exactly matches deterministic v0.2 analysis rebuilt from the supplied WAV.
 
 ## Source lineage
 
@@ -93,13 +99,14 @@ No SoundStream code or model weights are vendored.
 4. Never insert floats into identity-bearing JSON.
 5. Large exact integers must be canonical decimal strings; untrusted decimal fields must be bounded before `int()` conversion.
 6. Preserve source, PCM, short-matrix, long-matrix, sidecar and percept commitments independently.
-7. Never downmix channels implicitly.
-8. High sample rate permits analysis of represented bins above conventional human-audible ranges; it does not prove sensor response or physical ultrasonic validity.
-9. Learned models must be versioned and hash-bound when L2 is added.
-10. Keep a deterministic reference path before optimizing.
-11. Consult QSOLKCB/OPT before changing test, DSP, parallel, or Lean CI performance.
-12. Do not weaken tests or claim portable speedups without target-repo measurements.
-13. Run the complete suite after every behavior change.
+7. Sidecar acceptance must bind reconstructed short/long evidence to one PCM waveform, its PCM hash, the frozen v0.1 percept, transient observations, and channel relationships.
+8. Never downmix channels implicitly.
+9. High sample rate permits analysis of represented bins above conventional human-audible ranges; it does not prove sensor response or physical ultrasonic validity.
+10. Learned models must be versioned and hash-bound when L2 is added.
+11. Keep a deterministic reference path before optimizing.
+12. Consult QSOLKCB/OPT before changing test, DSP, parallel, or Lean CI performance.
+13. Do not weaken tests or claim portable speedups without target-repo measurements.
+14. Run the complete suite after every behavior change.
 
 ## Commands
 
@@ -118,6 +125,8 @@ python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json --sidecar spectra
 python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
+
+Output collisions are rejected before writing, including case-equivalent nonexistent names when the target filesystem is case-insensitive.
 
 Benchmark from a checkout:
 
