@@ -22,6 +22,10 @@ def _write_envelope(envelope: dict, output_path: Path | None) -> None:
         output_path.write_bytes(encoded)
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
 def _analyze(input_path: Path, output_path: Path | None) -> int:
     wave = parse_pcm16_wav(input_path.read_bytes())
     _write_envelope(build_percept(wave), output_path)
@@ -29,6 +33,9 @@ def _analyze(input_path: Path, output_path: Path | None) -> int:
 
 
 def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path | None) -> int:
+    if output_path is not None and sidecar_path is not None and _same_path(output_path, sidecar_path):
+        raise ValueError("percept output and sidecar output must be different paths")
+
     wave = parse_pcm16_wav(input_path.read_bytes())
     envelope = build_multiresolution_percept(wave)
     _write_envelope(envelope, output_path)
