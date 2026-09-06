@@ -143,21 +143,28 @@ class _ExactUTF8LineReader:
 
 
 def _exact_verification_lines(lines):
-    """Return a line source that preserves the sidecar's underlying bytes.
+    """Verify a complete stream without hiding a prefix or translating bytes.
 
-    A normal ``TextIOWrapper`` opened with ``newline=None`` translates CRLF to
-    LF before callers can inspect it. When a binary buffer is available, sync
-    the wrapper to its logical position and verify from that buffer directly so
-    canonical LF delimiters are checked before any text newline translation.
-    ``StringIO`` and explicit string iterables have no hidden byte translation
-    layer and are passed through unchanged.
+    Seekable inputs, including StringIO, must start at logical position zero.
+    Reject a nonzero position without consuming or rewinding the input. For a
+    binary-backed text stream, synchronize an already-zero logical position
+    before reading exact UTF-8 bytes, so read-ahead and CRLF translation cannot
+    hide noncanonical content. Explicit record iterables are checked as the
+    complete supplied sequence; they expose no underlying file position.
     """
-    binary = getattr(lines, "buffer", None)
-    if binary is None:
-        return lines
     try:
-        cookie = lines.tell()
-        lines.seek(cookie)
+        binary = getattr(lines, "buffer", None)
+        seekable = getattr(lines, "seekable", None)
+        can_seek = (
+            seekable() if callable(seekable)
+            else callable(getattr(lines, "seek", None))
+        )
+        if binary is not None or can_seek:
+            if lines.tell() != 0:
+                return None
+        if binary is None:
+            return lines
+        lines.seek(0)
     except (AttributeError, OSError, ValueError):
         return None
     if not callable(getattr(binary, "readline", None)):

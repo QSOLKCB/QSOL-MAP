@@ -624,6 +624,7 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
     centroid_denominator_total = 0
     centroid_numerator_total = 0
     selected_power_by_bin = [0] * len(aggregate_values)
+    selected_event_count_by_bin = [0] * len(aggregate_values)
     for event in events:
         centroid = event["spectral_centroid_bin"]
         denominator = _safe_decimal_int(centroid["denominator"])
@@ -636,7 +637,9 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
             power = _safe_decimal_int(component["power"])
             if power is None:
                 return False
-            selected_power_by_bin[component["bin"]] += power
+            bin_index = component["bin"]
+            selected_power_by_bin[bin_index] += power
+            selected_event_count_by_bin[bin_index] += 1
 
     if centroid_denominator_total != sum(aggregate_values):
         return False
@@ -645,8 +648,16 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
     )
     if centroid_numerator_total != expected_centroid_numerator_total:
         return False
-    if any(selected > aggregate for selected, aggregate in zip(selected_power_by_bin, aggregate_values)):
-        return False
+    for selected, aggregate, selected_count in zip(
+        selected_power_by_bin, aggregate_values, selected_event_count_by_bin
+    ):
+        if selected > aggregate:
+            return False
+        # Validated top-component bins are unique within each event. When all
+        # events report a bin, even at zero power, no unreported contribution
+        # remains and its aggregate is known exactly.
+        if selected_count == len(events) and selected != aggregate:
+            return False
 
     short_event_count = (frame_count + 128 - 1) // 128
     return _validate_transient(channel["transient"], short_event_count)

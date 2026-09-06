@@ -45,6 +45,7 @@ for _weight in SHORT_WINDOW_WEIGHTS:
 _PCM16_SQUARE_MAX = (1 << 15) ** 2
 _LONG_WINDOW_WEIGHT_SQUARE_MAX = max(weight * weight for weight in LONG_WINDOW_WEIGHTS)
 _LONG_FFT_STAGE_COUNT = LONG_FRAME_SIZE.bit_length() - 1
+_LONG_FFT_ENDPOINT_SCALE = Q15_ONE ** _LONG_FFT_STAGE_COUNT
 _LONG_FFT_TWIDDLE_NORM_MAX = max(
     real * real + imag * imag
     for real, imag in zip(TWIDDLE_COS_Q15_1024, TWIDDLE_SIN_Q15_1024)
@@ -163,13 +164,13 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
     if any(not _sum_of_two_squares_residues_possible(power) for power in aggregate):
         return False
 
-    # For a real-input FFT, DC and Nyquist have zero imaginary part. With one
-    # long event the aggregate row is the exact frame-power row, so endpoint
-    # powers must be perfect squares even when those bins are omitted from the
-    # compact top-component list.
+    # Endpoint coefficients are real integer multiples of Q15_ONE**10. With
+    # one event, aggregate endpoints are exact frame powers, even when omitted
+    # from top_components. Multiple-event aggregates are sums of squares and
+    # must not be subjected to this single-coefficient square-root condition.
     for endpoint in (0, len(aggregate) - 1):
         magnitude = isqrt(aggregate[endpoint])
-        if magnitude * magnitude != aggregate[endpoint]:
+        if magnitude * magnitude != aggregate[endpoint] or magnitude % _LONG_FFT_ENDPOINT_SCALE:
             return False
 
     event = events[0]
@@ -347,7 +348,7 @@ def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
             return False
         # One event makes these aggregate endpoints exact frame powers.
         # DC/Nyquist coefficients have the exact common scale Q15_ONE**10.
-        scale = Q15_ONE ** _LONG_FFT_STAGE_COUNT
+        scale = _LONG_FFT_ENDPOINT_SCALE
         magnitudes: list[int] = []
         for endpoint in (0, LONG_FRAME_SIZE // 2):
             power = _core._safe_decimal_int(spectral["aggregate_power_by_bin"][endpoint])
