@@ -44,6 +44,7 @@ The v0.1 profile is frozen and must remain byte-identical to its published golde
 The v0.2 profile imports the frozen v0.1 result and adds:
 
 - a deterministic 1024-sample / 512-hop long spectral reference;
+- an exact published normative quarter-wave Q15 table plus deterministic full-table reconstruction rule;
 - independent long complex/power matrix commitments;
 - explicit represented-frequency support and 20 kHz / 40 kHz reference regions;
 - no psychoacoustic low-pass filtering;
@@ -54,9 +55,9 @@ The v0.2 profile imports the frozen v0.1 result and adds:
 - exact sidecar reconstruction of PCM16 from both spectral profiles, requiring identical recovered waveforms;
 - reconstructed PCM SHA-256 binding, frozen-v0.1 percept rebuild, transient rebuild, and channel-relationship rebuild before sidecar acceptance.
 
-For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero. Candidate energies and summary totals are bounded by the source-sized frozen short-window PCM16 maxima. If fewer than two short frames exist, both transient summary totals are zero.
+For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero. Candidate energies and summary totals are bounded by the source-sized frozen short-window PCM16 maxima. If fewer than two short frames exist, both transient summary totals are zero. When more than 16 candidates exist, omitted candidates still contribute at least one positive integer unit each to `positive_delta_sum`.
 
-The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, and bounds long-frame energies by the committed PCM16 triangular-window maximum.
+The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, applies short-source integer realizability checks, and for two-frame multichannel sources requires feasible PCM vectors to reproduce the exact declared long-window energy.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
@@ -74,9 +75,9 @@ source bytes
 -> domain-separated percept_sha256
 ```
 
-Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. It does not replace the compact percept identity.
+Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. File-backed verification must inspect exact UTF-8/LF bytes before text newline translation; CRLF is not canonical.
 
-The public sidecar writer only accepts an envelope that exactly matches deterministic v0.2 analysis rebuilt from the supplied WAV.
+The public sidecar writer only accepts an envelope that exactly matches deterministic v0.2 analysis rebuilt from the supplied WAV and only writes to a provably empty seekable destination positioned at zero.
 
 ## Source lineage
 
@@ -126,7 +127,7 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
-Output collisions are rejected before writing, including case-equivalent nonexistent names when the target filesystem is case-insensitive.
+Output collisions are rejected before writing, including case-equivalent and Unicode-normalization-equivalent initially nonexistent names when the target filesystem aliases those names.
 
 Benchmark from a checkout:
 
