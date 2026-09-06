@@ -71,7 +71,9 @@ v0.2 imports the frozen v0.1 evidence and adds:
 - strict sidecar ordering, arithmetic, matrix-commitment, receipt, and reconstructed-evidence verification;
 - a frozen v0.2 golden percept vector.
 
-The compact verifier bounds long/transient energies by the exact source-sized PCM16/window maxima and requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count.
+The complete identity-bearing v0.2 quarter-wave Q15 twiddle table and its exact full-table reconstruction rule are published in `spec/QSOL-MAP-MULTIRES-v0.2.md`; independent producers do not infer rounding or generation behavior from the Python source.
+
+The compact verifier bounds long/transient energies by the exact source-sized PCM16/window maxima, checks short-source integer realizability, and requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count.
 
 The v0.2 packet remains Layer 1. It does not introduce neural tokens or semantic music interpretation.
 
@@ -129,7 +131,7 @@ energy-rise-3-over-2-v0.2
 
 For a transition from zero previous energy, `rise_ratio` is `null`. A finite rational numerator/denominator is emitted only when the previous energy is non-zero.
 
-Candidate energies and summary totals are source-sized against the frozen short triangular window. If the source produces fewer than two short frames, no transition exists and both summary totals are zero.
+Candidate energies and summary totals are source-sized against the frozen short triangular window. If the source produces fewer than two short frames, no transition exists and both summary totals are zero. The compact verifier also accounts for omitted candidates beyond the 16 reported strongest events when checking the positive-delta summary.
 
 This is an authored deterministic signal event, not a claim of equivalence to human onset perception.
 
@@ -145,7 +147,7 @@ For every channel pair `i < j`, v0.2 records exact quantities including:
 - `left + right` energy;
 - exact zero-lag correlation squared when both channel energies are non-zero.
 
-The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count.
+The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count. Very short sources receive additional integer-realizability checks; for two-frame multichannel sources the exact feasible PCM assignment must also reproduce the declared long-window energy.
 
 These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
 
@@ -176,7 +178,7 @@ with exact decimal strings and verified `power = real^2 + imag^2`.
 
 The verifier checks:
 
-- canonical line encoding and bounded reads;
+- canonical UTF-8 line bytes with exact LF terminators before any text newline translation;
 - exact typed header data;
 - plain non-Boolean integer position fields;
 - deterministic row order;
@@ -191,7 +193,7 @@ The verifier checks:
 - channel relationships rebuilt from reconstructed PCM;
 - missing, extra, malformed, or decode-failed records.
 
-The public writer independently rebuilds the deterministic v0.2 percept from the supplied WAV and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest.
+The public writer independently rebuilds the deterministic v0.2 percept from the supplied WAV and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest. It also requires an empty, seekable destination positioned at zero so it cannot append a valid receipt to stale content.
 
 The verifier uses bounded temporary spools for reconstruction rather than building complete spectral matrices or an unbounded waveform in memory.
 
@@ -215,7 +217,7 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
-The CLI rejects compact-percept/sidecar output aliases before writing. Existing aliases are checked by filesystem identity, and initially nonexistent names that differ only by case are rejected when their shared target filesystem is case-insensitive.
+The CLI rejects compact-percept/sidecar output aliases before writing. Existing aliases are checked by filesystem identity; initially nonexistent names are also checked against target-filesystem case folding and Unicode normalization equivalence, including NFC/NFD-equivalent spellings such as precomposed and decomposed `é`.
 
 ## Strict input boundary
 
@@ -249,7 +251,7 @@ v0.2 bounds untrusted decimal-string length before converting it to Python integ
 
 The verification path also rejects Boolean values where canonical schemas require integers. Ordinary Python equality treats `False == 0` and `True == 1`; QSOL-MAP does not allow that language behavior to blur protocol types.
 
-Source-sized PCM/window energy bounds and exact channel Gram-rank feasibility reject compact observations that cannot arise from the declared number of PCM16 samples even when outer hashes are recomputed.
+Source-sized PCM/window energy bounds, exact short-source integer feasibility, transform-power bounds, transient-summary constraints, and exact channel Gram-rank feasibility reject compact observations that cannot arise from the declared PCM16 source even when outer hashes are recomputed.
 
 ## Golden vectors
 
@@ -287,8 +289,9 @@ Coverage includes:
 - sidecar round-trip and reconstructed-evidence tamper rejection;
 - Boolean sidecar position rejection even after receipt recomputation;
 - sidecar writer rejection of envelopes that contradict the supplied WAV;
+- canonical LF sidecar verification before text newline translation;
 - CLI v0.2 and sidecar round-trips;
-- filesystem output-alias rejection;
+- filesystem output-alias rejection including normalization-equivalent names;
 - direct checkout execution of the benchmark harness.
 
 ## Benchmarking and optimization
