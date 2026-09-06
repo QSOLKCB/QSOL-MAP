@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 import hashlib
 import hmac
 import re
@@ -419,6 +420,8 @@ def _validate_top_components(components: object) -> bool:
         power = _safe_decimal_int(component["power"])
         if real is None or imag is None or power is None:
             return False
+        if bin_index in (0, LONG_FRAME_SIZE // 2) and imag != 0:
+            return False
         if power != real * real + imag * imag:
             return False
         if previous_power is not None:
@@ -448,7 +451,8 @@ def _validate_long_event(event: object, index: int) -> bool:
         return False
     if event["frame_index"] != index or event["sample_start"] != index * LONG_HOP_SIZE:
         return False
-    if not _unsigned_decimal(event["windowed_energy"]):
+    windowed_energy = _safe_decimal_int(event["windowed_energy"])
+    if windowed_energy is None:
         return False
     centroid = event["spectral_centroid_bin"]
     if not _exact_keys(centroid, {"numerator", "denominator"}):
@@ -459,11 +463,21 @@ def _validate_long_event(event: object, index: int) -> bool:
         return False
     if numerator > (LONG_FRAME_SIZE // 2) * denominator:
         return False
+    if (windowed_energy == 0) != (denominator == 0):
+        return False
     dominant = event["dominant_non_dc_bin"]
     if not _plain_int(dominant) or not 1 <= dominant <= LONG_FRAME_SIZE // 2:
         return False
     components = event["top_components"]
     if not _validate_top_components(components):
+        return False
+    component_power_total = 0
+    for component in components:
+        power = _safe_decimal_int(component["power"])
+        if power is None:
+            return False
+        component_power_total += power
+    if component_power_total > denominator:
         return False
     strongest_non_dc = next(
         (component["bin"] for component in components if component["bin"] != 0),
@@ -494,6 +508,8 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
         return False
 
     seen: set[int] = set()
+    candidate_energies: dict[int, tuple[int, int]] = {}
+    reported_delta_sum = 0
     previous_strength: int | None = None
     previous_index_for_tie: int | None = None
     for candidate in candidates:
@@ -523,6 +539,8 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
             return False
         if positive_delta > maximum_positive_delta or positive_delta > positive_delta_sum:
             return False
+        reported_delta_sum += positive_delta
+        candidate_energies[frame_index] = (previous_energy, current_energy)
 
         ratio = candidate["rise_ratio"]
         if previous_energy == 0:
@@ -543,6 +561,13 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
                 return False
         previous_strength = positive_delta
         previous_index_for_tie = frame_index
+
+    if reported_delta_sum > positive_delta_sum:
+        return False
+    for frame_index, (_, current_energy) in candidate_energies.items():
+        next_energies = candidate_energies.get(frame_index + 1)
+        if next_energies is not None and current_energy != next_energies[0]:
+            return False
     return True
 
 
@@ -560,9 +585,12 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
     aggregate = spectral["aggregate_power_by_bin"]
     if not isinstance(aggregate, list) or len(aggregate) != LONG_FRAME_SIZE // 2 + 1:
         return False
-    aggregate_values = [_safe_decimal_int(value) for value in aggregate]
-    if any(value is None for value in aggregate_values):
-        return False
+    aggregate_values: list[int] = []
+    for value in aggregate:
+        parsed = _safe_decimal_int(value)
+        if parsed is None:
+            return False
+        aggregate_values.append(parsed)
 
     regions = spectral["aggregate_power_by_frequency_region"]
     region_names = {
@@ -572,9 +600,12 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
     }
     if not _exact_keys(regions, region_names):
         return False
-    region_values = {key: _safe_decimal_int(regions[key]) for key in region_names}
-    if any(value is None for value in region_values.values()):
-        return False
+    region_values: dict[str, int] = {}
+    for key in region_names:
+        parsed = _safe_decimal_int(regions[key])
+        if parsed is None:
+            return False
+        region_values[key] = parsed
     expected_regions = {key: 0 for key in region_names}
     for bin_index, power in enumerate(aggregate_values):
         expected_regions[_region_index(sample_rate, bin_index)] += power
@@ -589,16 +620,59 @@ def _validate_long_channel(channel: object, index: int, frame_count: int, sample
         return False
     if not all(_validate_long_event(event, event_index) for event_index, event in enumerate(events)):
         return False
+
     centroid_denominator_total = 0
+    centroid_numerator_total = 0
+    selected_power_by_bin = [0] * len(aggregate_values)
     for event in events:
-        denominator = _safe_decimal_int(event["spectral_centroid_bin"]["denominator"])
-        if denominator is None:
+        centroid = event["spectral_centroid_bin"]
+        denominator = _safe_decimal_int(centroid["denominator"])
+        numerator = _safe_decimal_int(centroid["numerator"])
+        if denominator is None or numerator is None:
             return False
         centroid_denominator_total += denominator
+        centroid_numerator_total += numerator
+        for component in event["top_components"]:
+            power = _safe_decimal_int(component["power"])
+            if power is None:
+                return False
+            selected_power_by_bin[component["bin"]] += power
+
     if centroid_denominator_total != sum(aggregate_values):
         return False
+    expected_centroid_numerator_total = sum(
+        bin_index * power for bin_index, power in enumerate(aggregate_values)
+    )
+    if centroid_numerator_total != expected_centroid_numerator_total:
+        return False
+    if any(selected > aggregate for selected, aggregate in zip(selected_power_by_bin, aggregate_values)):
+        return False
+
     short_event_count = (frame_count + 128 - 1) // 128
     return _validate_transient(channel["transient"], short_event_count)
+
+
+def _gram_matrix_is_psd(matrix: list[list[int]]) -> bool:
+    """Validate positive semidefiniteness with exact rational Schur complements."""
+    work = [[Fraction(value) for value in row] for row in matrix]
+    size = len(work)
+    for pivot_index in range(size):
+        pivot = work[pivot_index][pivot_index]
+        if pivot < 0:
+            return False
+        if pivot == 0:
+            if any(work[pivot_index][column] != 0 for column in range(pivot_index + 1, size)):
+                return False
+            continue
+        for row in range(pivot_index + 1, size):
+            for column in range(row, size):
+                updated = (
+                    work[row][column]
+                    - work[row][pivot_index] * work[pivot_index][column] / pivot
+                )
+                work[row][column] = updated
+                work[column][row] = updated
+    return True
 
 
 def _validate_relationships(value: object, channel_count: int) -> bool:
@@ -607,6 +681,7 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
         return False
     expected = [(i, j) for i in range(channel_count) for j in range(i + 1, channel_count)]
     channel_energies: dict[int, int] = {}
+    gram = [[0] * channel_count for _ in range(channel_count)]
     for relation, (left, right) in zip(value, expected):
         if not _exact_keys(
             relation,
@@ -637,10 +712,19 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
         sum_energy = _safe_decimal_int(relation["sum_sum_squares"])
         if None in (dot, left_energy, right_energy, difference_energy, sum_energy):
             return False
+        assert dot is not None
+        assert left_energy is not None
+        assert right_energy is not None
+        assert difference_energy is not None
+        assert sum_energy is not None
+
         for channel_index, energy in ((left, left_energy), (right, right_energy)):
             if channel_index in channel_energies and channel_energies[channel_index] != energy:
                 return False
             channel_energies[channel_index] = energy
+        gram[left][right] = dot
+        gram[right][left] = dot
+
         expected_sign = 1 if dot > 0 else -1 if dot < 0 else 0
         if relation["dot_product_sign"] != expected_sign:
             return False
@@ -664,7 +748,14 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
             corr_denominator = _safe_decimal_int(corr["denominator"])
             if corr_numerator != numerator_value or corr_denominator != denominator_value or corr_denominator == 0:
                 return False
-    return True
+
+    if channel_count <= 1:
+        return True
+    if len(channel_energies) != channel_count:
+        return False
+    for channel_index, energy in channel_energies.items():
+        gram[channel_index][channel_index] = energy
+    return _gram_matrix_is_psd(gram)
 
 
 def _validate_percept_core(percept: object) -> bool:
