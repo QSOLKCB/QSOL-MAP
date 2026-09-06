@@ -27,11 +27,14 @@ For an accepted source and `qsol-map-multiresolution-v0.2`, the reference implem
 5. aggregate power is reported in authored `[0,20 kHz)`, `[20,40 kHz)`, and `[40 kHz,Nyquist]` reference regions when such represented bins exist;
 6. deterministic transient candidates are produced by the exact `energy-rise-3-over-2-v0.2` rule applied to frozen v0.1 short-frame energies;
 7. a transition from zero previous energy is represented with `rise_ratio: null`, never a zero-denominator rational value;
-8. exact pairwise channel signal relationships are recorded without downmixing;
-9. an optional canonical NDJSON sidecar can carry every short and long complex spectral row while remaining separately verified against compact matrix commitments;
-10. sidecar ordering, coefficient arithmetic, receipt hashes and exact typed position fields are checked fail-closed;
-11. malformed oversized decimal strings are rejected before untrusted integer conversion can escape the verifier contract;
-12. the v0.2 golden vector protects the current multi-resolution reference behavior.
+8. transient energies and summary totals are bounded by source-sized PCM16/frozen-window maxima, with zero totals when no consecutive short frames exist;
+9. exact pairwise channel signal relationships are recorded without downmixing, and the complete Gram matrix is jointly feasible with rank no greater than the source frame count;
+10. an optional canonical NDJSON sidecar can carry every short and long complex spectral row while remaining separately verified against compact matrix commitments;
+11. accepted sidecars reconstruct exact PCM16 from both profiles, require one shared waveform, bind that waveform to `pcm_s16le_sha256`, rebuild the frozen v0.1 percept identity, and reconstruct transient/channel observations;
+12. sidecar ordering, coefficient arithmetic, receipt hashes and exact typed position fields are checked fail-closed;
+13. the sidecar writer emits evidence only when the supplied envelope exactly equals deterministic v0.2 analysis rebuilt from the supplied WAV;
+14. malformed oversized decimal strings are rejected before untrusted integer conversion can escape the verifier contract;
+15. the v0.2 golden vector protects the current multi-resolution reference behavior.
 
 ## What QSOL-MAP v0.2.0 does not claim
 
@@ -80,19 +83,27 @@ It is an authored Layer-1 observation rule. Candidate count and strongest-candid
 
 When `previous == 0`, the ratio is not finite. The canonical representation uses `rise_ratio: null` rather than encoding an invalid denominator of zero.
 
+Candidate energies and summary totals must remain within the maximum possible values implied by PCM16 input, the frozen short triangular window and the source tail. If fewer than two short frames exist, there is no transition and both summary totals are zero.
+
 ## Channel boundary
 
 Channels are never implicitly mixed in the canonical v0.1 or v0.2 paths.
 
-Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. They do not by themselves establish acoustic scene geometry or spatial perception.
+Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. The complete Gram matrix must be positive semidefinite and have rank at most `frame_count`, so accepted relationships can arise from vectors in the declared sample space.
+
+They do not by themselves establish acoustic scene geometry or spatial perception.
 
 ## Sidecar boundary
 
 The optional `qsol-map-spectral-sidecar-v0.2` is complete spectral evidence for the declared short and long transforms, not a replacement audio format.
 
-Its verifier checks deterministic ordering, typed integer position fields, coefficient arithmetic, receipt identity and reconstruction of the compact packet's matrix commitments.
+Its verifier checks deterministic ordering, typed integer position fields, coefficient arithmetic, receipt identity and reconstruction of the compact packet's matrix commitments. It additionally inverts both profiles to exact PCM16, checks overlap/tail/window constraints, requires both profiles to reconstruct the same waveform, binds reconstructed interleaved PCM to `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations against recovered samples.
 
-A valid sidecar proves conformance to the declared serialization/commitment relationship. It does not prove that the source recording is authentic or scientifically meaningful.
+A decode failure is invalid evidence even if it occurs after an otherwise valid trailer. Verification uses bounded reads and bounded temporary spools.
+
+The public writer independently rebuilds deterministic v0.2 analysis from the supplied WAV and refuses to emit a sidecar when the supplied envelope differs, including a rebound matrix commitment with a recomputed outer digest.
+
+A valid sidecar proves conformance to the declared serialization/commitment/reconstruction relationship. It does not prove that the source recording is authentic or scientifically meaningful.
 
 ## Determinism boundary
 
@@ -115,7 +126,10 @@ Important rules include:
 - Boolean values are not accepted where integer fields are required;
 - identity-bearing decimal strings are canonical and length-bounded before integer conversion;
 - exact typed structures use canonical-byte comparison where ordinary Python equality would blur `False` with `0` or `True` with `1`;
-- invalid structural data is rejected even when an attacker recomputes outer hashes.
+- long and short-frame authored energies are bounded by the source/PCM/window contract;
+- channel relationships must be jointly feasible in the declared sample dimension;
+- invalid structural data is rejected even when an attacker recomputes outer hashes;
+- output destinations are checked by filesystem identity, including case-equivalent initially nonexistent names on case-insensitive target filesystems.
 
 These checks establish protocol validity, not trust in the origin of the data.
 
