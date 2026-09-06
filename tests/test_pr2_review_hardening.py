@@ -263,7 +263,7 @@ class PR2ReviewHardeningTests(unittest.TestCase):
         trailer = write_spectral_sidecar(wave, envelope, stream)
         self.assertEqual(
             trailer["records_sha256"],
-            "__RECORDS_SHA256__",
+            "4977b3532a47c7eaaa29a27ebee867b24bd015b949a3557f58486585ee729ecb",
         )
         self.assertEqual(
             trailer["receipt_sha256"],
