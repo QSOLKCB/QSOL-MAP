@@ -10,10 +10,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import platform
 import statistics
 import struct
+import sys
 import time
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from qsol_map.multiresolution import build_multiresolution_percept
 from qsol_map.wav import parse_pcm16_wav
