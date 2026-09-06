@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 
+import qsol_map.sidecar as sidecar_module
 from qsol_map.__main__ import _analyze_v02
 from qsol_map.canonical import canonical_bytes, domain_sha256
 from qsol_map.multiresolution import (
@@ -144,6 +145,21 @@ class PR2ReviewHardeningTests(unittest.TestCase):
                     sys.stdout = old_stdout
             self.assertEqual(stdout_path.read_bytes(), b"")
 
+    def test_implicit_stdout_cannot_alias_input_wav(self):
+        wav_bytes = make_wav([1, -1] * 300)
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.wav"
+            input_path.write_bytes(wav_bytes)
+            with input_path.open("a", encoding="utf-8") as stdout_stream:
+                old_stdout = sys.stdout
+                sys.stdout = stdout_stream
+                try:
+                    with self.assertRaises(ValueError):
+                        _analyze_v02(input_path, None, None)
+                finally:
+                    sys.stdout = old_stdout
+            self.assertEqual(input_path.read_bytes(), wav_bytes)
+
     def test_multichannel_relationship_gram_matrix_must_be_psd(self):
         interleaved = []
         for index in range(64):
@@ -163,6 +179,32 @@ class PR2ReviewHardeningTests(unittest.TestCase):
                 "numerator": "1",
                 "denominator": "1",
             }
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_relationship_channel_energy_cannot_exceed_pcm16_source_bound(self):
+        interleaved = []
+        for index in range(64):
+            interleaved.extend((index - 32, 32 - index))
+        wave = parse_pcm16_wav(make_wav(interleaved, channels=2))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        frame_count = changed["percept"]["source"]["frame_count"]
+        impossible_energy = frame_count * (1 << 15) ** 2 + 1
+        relation = changed["percept"]["channel_relationships"][0]
+        relation.update(
+            {
+                "dot_product": "0",
+                "dot_product_sign": 0,
+                "left_sum_squares": str(impossible_energy),
+                "right_sum_squares": str(impossible_energy),
+                "difference_sum_squares": str(2 * impossible_energy),
+                "sum_sum_squares": str(2 * impossible_energy),
+                "zero_lag_correlation_squared": {
+                    "numerator": "0",
+                    "denominator": str(impossible_energy * impossible_energy),
+                },
+            }
+        )
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
@@ -186,6 +228,48 @@ class PR2ReviewHardeningTests(unittest.TestCase):
         event["windowed_energy"] = "1"
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_sidecar_rows_bind_exact_long_window_energy(self):
+        samples = [((index * 29) % 2003) - 1001 for index in range(900)]
+        wave = parse_pcm16_wav(make_wav(samples))
+        envelope = build_multiresolution_percept(wave)
+        stream = io.StringIO()
+        write_spectral_sidecar(wave, envelope, stream)
+
+        changed = copy.deepcopy(envelope)
+        event = changed["percept"]["channels"][0]["long_spectral"]["events"][0]
+        self.assertNotEqual(event["windowed_energy"], "0")
+        event["windowed_energy"] = str(int(event["windowed_energy"]) + 1)
+        rehash(changed)
+        self.assertTrue(verify_multiresolution_envelope(changed))
+
+        rebound = rebind_sidecar(changed, stream.getvalue())
+        self.assertFalse(verify_spectral_sidecar(changed, io.StringIO(rebound)))
+
+    def test_file_backed_sidecar_reads_are_bounded_before_line_materialization(self):
+        wave = parse_pcm16_wav(make_wav([1, -1] * 300))
+        envelope = build_multiresolution_percept(wave)
+
+        class TrackingStream(io.StringIO):
+            def __init__(self, value):
+                super().__init__(value)
+                self.read_sizes = []
+
+            def __iter__(self):
+                raise AssertionError("file-backed verifier must use bounded readline")
+
+            def readline(self, size=-1):
+                self.read_sizes.append(size)
+                return super().readline(size)
+
+        old_limit = sidecar_module.MAX_SIDECAR_LINE_CHARS
+        sidecar_module.MAX_SIDECAR_LINE_CHARS = 64
+        try:
+            stream = TrackingStream("x" * 100 + "\n")
+            self.assertFalse(verify_spectral_sidecar(envelope, stream))
+            self.assertEqual(stream.read_sizes, [65])
+        finally:
+            sidecar_module.MAX_SIDECAR_LINE_CHARS = old_limit
 
     def test_adjacent_transient_candidates_share_frame_energy(self):
         wave = parse_pcm16_wav(make_wav([0] * 512 + [12000] * 512))
