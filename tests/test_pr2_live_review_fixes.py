@@ -66,12 +66,43 @@ class PR2LiveReviewFixes(unittest.TestCase):
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
+    def test_two_frame_long_energy_must_match_a_feasible_pcm_assignment(self):
+        wave = parse_pcm16_wav(make_wav([1, 1, 0, 0], channels=2))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        for channel in changed["percept"]["channels"]:
+            event = channel["long_spectral"]["events"][0]
+            self.assertEqual(event["windowed_energy"], "1")
+            event["windowed_energy"] = "2"
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
     def test_zero_maximum_positive_delta_requires_zero_positive_sum(self):
         wave = parse_pcm16_wav(make_wav([0] * 384))
         changed = copy.deepcopy(build_multiresolution_percept(wave))
         transient = changed["percept"]["channels"][0]["transient"]
         transient["positive_delta_sum"] = "1"
         transient["maximum_positive_delta"] = "0"
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_omitted_transient_candidates_contribute_to_positive_sum(self):
+        wave = parse_pcm16_wav(make_wav([0] * 2177))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        transient = changed["percept"]["channels"][0]["transient"]
+        transient["candidate_count"] = 17
+        transient["positive_delta_sum"] = "16"
+        transient["maximum_positive_delta"] = "1"
+        transient["strongest_candidates"] = [
+            {
+                "frame_index": frame_index,
+                "sample_start": frame_index * 128,
+                "previous_energy": "0",
+                "current_energy": "1",
+                "positive_delta": "1",
+                "rise_ratio": None,
+            }
+            for frame_index in range(1, 17)
+        ]
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
 
@@ -96,6 +127,24 @@ class PR2LiveReviewFixes(unittest.TestCase):
             verify_spectral_sidecar(envelope, io.StringIO(payload.decode("utf-8")))
         )
         stream.detach()
+
+    def test_sidecar_verifier_rejects_crlf_before_text_translation(self):
+        samples = [((index * 17) % 701) - 350 for index in range(300)]
+        wave = parse_pcm16_wav(make_wav(samples))
+        envelope = build_multiresolution_percept(wave)
+        canonical_stream = io.StringIO()
+        write_spectral_sidecar(wave, envelope, canonical_stream)
+        canonical_bytes_payload = canonical_stream.getvalue().encode("utf-8")
+
+        valid_raw = io.BytesIO(canonical_bytes_payload)
+        valid_text = io.TextIOWrapper(valid_raw, encoding="utf-8", newline=None)
+        self.assertTrue(verify_spectral_sidecar(envelope, valid_text))
+        valid_text.detach()
+
+        crlf_raw = io.BytesIO(canonical_bytes_payload.replace(b"\n", b"\r\n"))
+        crlf_text = io.TextIOWrapper(crlf_raw, encoding="utf-8", newline=None)
+        self.assertFalse(verify_spectral_sidecar(envelope, crlf_text))
+        crlf_text.detach()
 
     def test_multi_event_top_components_must_have_capacity_for_total_power(self):
         samples = [((index * 37) % 2001) - 1000 for index in range(700)]
