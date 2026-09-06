@@ -35,7 +35,7 @@ MAX_TRANSIENT_EVENTS = 16
 MAX_DECIMAL_DIGITS = 1024
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
-_SIGNED_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)\Z", re.ASCII)
+_SIGNED_DECIMAL = re.compile(r"(?:0|-?[1-9][0-9]*)\Z", re.ASCII)
 _UNSIGNED_DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)\Z", re.ASCII)
 
 
@@ -412,9 +412,12 @@ def _validate_top_components(components: object) -> bool:
         if bin_index in bins:
             return False
         bins.add(bin_index)
-        if not _signed_decimal(component["real"]) or not _signed_decimal(component["imag"]):
+        real = _safe_decimal_int(component["real"], signed=True)
+        imag = _safe_decimal_int(component["imag"], signed=True)
+        power = _safe_decimal_int(component["power"])
+        if real is None or imag is None or power is None:
             return False
-        if not _unsigned_decimal(component["power"]):
+        if power != real * real + imag * imag:
             return False
     return True
 
@@ -460,7 +463,11 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
     count = value["candidate_count"]
     if not _plain_int(count) or not 0 <= count <= max(0, short_event_count - 1):
         return False
-    if not _unsigned_decimal(value["positive_delta_sum"]) or not _unsigned_decimal(value["maximum_positive_delta"]):
+    positive_delta_sum = _safe_decimal_int(value["positive_delta_sum"])
+    maximum_positive_delta = _safe_decimal_int(value["maximum_positive_delta"])
+    if positive_delta_sum is None or maximum_positive_delta is None:
+        return False
+    if maximum_positive_delta > positive_delta_sum:
         return False
     candidates = value["strongest_candidates"]
     if not isinstance(candidates, list) or len(candidates) > min(MAX_TRANSIENT_EVENTS, count):
@@ -494,6 +501,8 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
             return False
         if positive_delta != current_energy - previous_energy:
             return False
+        if positive_delta > maximum_positive_delta or positive_delta > positive_delta_sum:
+            return False
 
         ratio = candidate["rise_ratio"]
         if previous_energy == 0:
@@ -517,7 +526,7 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
     return True
 
 
-def _validate_long_channel(channel: object, index: int, frame_count: int) -> bool:
+def _validate_long_channel(channel: object, index: int, frame_count: int, sample_rate: int) -> bool:
     if not _exact_keys(channel, {"channel_index", "long_spectral", "transient"}):
         return False
     if not _plain_int(channel["channel_index"]) or channel["channel_index"] != index:
@@ -536,12 +545,20 @@ def _validate_long_channel(channel: object, index: int, frame_count: int) -> boo
         return False
 
     regions = spectral["aggregate_power_by_frequency_region"]
-    if not _exact_keys(regions, {"below_20khz_reference", "20_to_40khz_reference", "at_or_above_40khz_reference"}):
+    region_names = {
+        "below_20khz_reference",
+        "20_to_40khz_reference",
+        "at_or_above_40khz_reference",
+    }
+    if not _exact_keys(regions, region_names):
         return False
-    region_values = [_safe_decimal_int(value) for value in regions.values()]
-    if any(value is None for value in region_values):
+    region_values = {key: _safe_decimal_int(regions[key]) for key in region_names}
+    if any(value is None for value in region_values.values()):
         return False
-    if sum(region_values) != sum(aggregate_values):
+    expected_regions = {key: 0 for key in region_names}
+    for bin_index, power in enumerate(aggregate_values):
+        expected_regions[_region_index(sample_rate, bin_index)] += power
+    if region_values != expected_regions:
         return False
     if not _hex_digest(spectral["complex_matrix_sha256"]) or not _hex_digest(spectral["power_matrix_sha256"]):
         return False
@@ -593,6 +610,10 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
             return False
         expected_sign = 1 if dot > 0 else -1 if dot < 0 else 0
         if relation["dot_product_sign"] != expected_sign:
+            return False
+        if difference_energy != left_energy + right_energy - 2 * dot:
+            return False
+        if sum_energy != left_energy + right_energy + 2 * dot:
             return False
 
         corr = relation["zero_lag_correlation_squared"]
@@ -689,7 +710,10 @@ def _validate_percept_core(percept: object) -> bool:
     channels = percept["channels"]
     if not isinstance(channels, list) or len(channels) != channel_count:
         return False
-    if not all(_validate_long_channel(channel, index, frame_count) for index, channel in enumerate(channels)):
+    if not all(
+        _validate_long_channel(channel, index, frame_count, sample_rate)
+        for index, channel in enumerate(channels)
+    ):
         return False
     if not _validate_relationships(percept["channel_relationships"], channel_count):
         return False
