@@ -32,6 +32,7 @@ ONSET_RULE_ID = "energy-rise-3-over-2-v0.2"
 AUDIBLE_REFERENCE_UPPER_HZ = 20_000
 ULTRASONIC_SPLIT_HZ = 40_000
 MAX_TRANSIENT_EVENTS = 16
+MAX_DECIMAL_DIGITS = 1024
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _SIGNED_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)\Z", re.ASCII)
@@ -46,16 +47,45 @@ def _hex_digest(value: object) -> bool:
     return isinstance(value, str) and _HEX64.fullmatch(value) is not None
 
 
+def _decimal_digits(value: str) -> int:
+    return len(value) - (1 if value.startswith("-") else 0)
+
+
 def _signed_decimal(value: object) -> bool:
-    return isinstance(value, str) and _SIGNED_DECIMAL.fullmatch(value) is not None
+    return (
+        isinstance(value, str)
+        and _decimal_digits(value) <= MAX_DECIMAL_DIGITS
+        and _SIGNED_DECIMAL.fullmatch(value) is not None
+    )
 
 
 def _unsigned_decimal(value: object) -> bool:
-    return isinstance(value, str) and _UNSIGNED_DECIMAL.fullmatch(value) is not None
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_DECIMAL_DIGITS
+        and _UNSIGNED_DECIMAL.fullmatch(value) is not None
+    )
+
+
+def _safe_decimal_int(value: object, *, signed: bool = False) -> int | None:
+    validator = _signed_decimal if signed else _unsigned_decimal
+    if not validator(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _exact_keys(value: object, keys: set[str]) -> bool:
     return isinstance(value, dict) and set(value) == keys
+
+
+def _canonical_equal(left: object, right: object) -> bool:
+    try:
+        return canonical_bytes(left) == canonical_bytes(right)
+    except (TypeError, ValueError, UnicodeError):
+        return False
 
 
 def _frame_starts(sample_count: int) -> range:
@@ -196,6 +226,12 @@ def _transient_observation(v01_channel: dict) -> dict:
             positive_delta_sum += positive
             maximum_positive_delta = max(maximum_positive_delta, positive)
             if current > previous_energy and current * 2 >= previous_energy * 3:
+                rise_ratio = None
+                if previous_energy != 0:
+                    rise_ratio = {
+                        "numerator": str(current),
+                        "denominator": str(previous_energy),
+                    }
                 candidates.append(
                     {
                         "frame_index": event["frame_index"],
@@ -203,10 +239,7 @@ def _transient_observation(v01_channel: dict) -> dict:
                         "previous_energy": str(previous_energy),
                         "current_energy": str(current),
                         "positive_delta": str(positive),
-                        "rise_ratio": {
-                            "numerator": str(current),
-                            "denominator": str(previous_energy),
-                        },
+                        "rise_ratio": rise_ratio,
                     }
                 )
         previous_energy = current
@@ -366,7 +399,6 @@ def build_multiresolution_percept(wave: PCM16Wave) -> dict:
     }
 
 
-# validator helpers follow the v0.1 fail-closed style but keep the v0.2 schema independent.
 def _validate_top_components(components: object) -> bool:
     if not isinstance(components, list) or len(components) != LONG_TOP_K:
         return False
@@ -400,9 +432,9 @@ def _validate_long_event(event: object, index: int) -> bool:
         },
     ):
         return False
-    if event["frame_index"] != index or event["sample_start"] != index * LONG_HOP_SIZE:
-        return False
     if not _plain_int(event["frame_index"]) or not _plain_int(event["sample_start"]):
+        return False
+    if event["frame_index"] != index or event["sample_start"] != index * LONG_HOP_SIZE:
         return False
     if not _unsigned_decimal(event["windowed_energy"]):
         return False
@@ -431,10 +463,12 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
     if not _unsigned_decimal(value["positive_delta_sum"]) or not _unsigned_decimal(value["maximum_positive_delta"]):
         return False
     candidates = value["strongest_candidates"]
-    if not isinstance(candidates, list) or len(candidates) > min(16, count):
+    if not isinstance(candidates, list) or len(candidates) > min(MAX_TRANSIENT_EVENTS, count):
         return False
+
     seen: set[int] = set()
-    previous_strength = None
+    previous_strength: int | None = None
+    previous_index_for_tie: int | None = None
     for candidate in candidates:
         if not _exact_keys(
             candidate,
@@ -442,32 +476,51 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
         ):
             return False
         frame_index = candidate["frame_index"]
+        sample_start = candidate["sample_start"]
         if not _plain_int(frame_index) or not 1 <= frame_index < short_event_count:
             return False
-        if candidate["sample_start"] != frame_index * 128 or not _plain_int(candidate["sample_start"]):
+        if not _plain_int(sample_start) or sample_start != frame_index * 128:
             return False
         if frame_index in seen:
             return False
         seen.add(frame_index)
-        for key in ("previous_energy", "current_energy", "positive_delta"):
-            if not _unsigned_decimal(candidate[key]):
-                return False
+
+        previous_energy = _safe_decimal_int(candidate["previous_energy"])
+        current_energy = _safe_decimal_int(candidate["current_energy"])
+        positive_delta = _safe_decimal_int(candidate["positive_delta"])
+        if previous_energy is None or current_energy is None or positive_delta is None:
+            return False
+        if current_energy <= previous_energy or current_energy * 2 < previous_energy * 3:
+            return False
+        if positive_delta != current_energy - previous_energy:
+            return False
+
         ratio = candidate["rise_ratio"]
-        if not _exact_keys(ratio, {"numerator", "denominator"}):
-            return False
-        if not _unsigned_decimal(ratio["numerator"]) or not _unsigned_decimal(ratio["denominator"]):
-            return False
-        strength = int(candidate["positive_delta"])
-        if previous_strength is not None and strength > previous_strength:
-            return False
-        previous_strength = strength
+        if previous_energy == 0:
+            if ratio is not None:
+                return False
+        else:
+            if not _exact_keys(ratio, {"numerator", "denominator"}):
+                return False
+            numerator = _safe_decimal_int(ratio["numerator"])
+            denominator = _safe_decimal_int(ratio["denominator"])
+            if numerator != current_energy or denominator != previous_energy or denominator == 0:
+                return False
+
+        if previous_strength is not None:
+            if positive_delta > previous_strength:
+                return False
+            if positive_delta == previous_strength and previous_index_for_tie is not None and frame_index < previous_index_for_tie:
+                return False
+        previous_strength = positive_delta
+        previous_index_for_tie = frame_index
     return True
 
 
 def _validate_long_channel(channel: object, index: int, frame_count: int) -> bool:
     if not _exact_keys(channel, {"channel_index", "long_spectral", "transient"}):
         return False
-    if channel["channel_index"] != index or not _plain_int(channel["channel_index"]):
+    if not _plain_int(channel["channel_index"]) or channel["channel_index"] != index:
         return False
     spectral = channel["long_spectral"]
     if not _exact_keys(
@@ -478,17 +531,21 @@ def _validate_long_channel(channel: object, index: int, frame_count: int) -> boo
     aggregate = spectral["aggregate_power_by_bin"]
     if not isinstance(aggregate, list) or len(aggregate) != LONG_FRAME_SIZE // 2 + 1:
         return False
-    if not all(_unsigned_decimal(value) for value in aggregate):
+    aggregate_values = [_safe_decimal_int(value) for value in aggregate]
+    if any(value is None for value in aggregate_values):
         return False
+
     regions = spectral["aggregate_power_by_frequency_region"]
     if not _exact_keys(regions, {"below_20khz_reference", "20_to_40khz_reference", "at_or_above_40khz_reference"}):
         return False
-    if not all(_unsigned_decimal(value) for value in regions.values()):
+    region_values = [_safe_decimal_int(value) for value in regions.values()]
+    if any(value is None for value in region_values):
         return False
-    if sum(int(value) for value in regions.values()) != sum(int(value) for value in aggregate):
+    if sum(region_values) != sum(aggregate_values):
         return False
     if not _hex_digest(spectral["complex_matrix_sha256"]) or not _hex_digest(spectral["power_matrix_sha256"]):
         return False
+
     events = spectral["events"]
     expected = (frame_count + LONG_HOP_SIZE - 1) // LONG_HOP_SIZE
     if not isinstance(events, list) or len(events) != expected:
@@ -520,24 +577,35 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
             },
         ):
             return False
-        if relation["left_channel"] != left or relation["right_channel"] != right:
-            return False
         if not _plain_int(relation["left_channel"]) or not _plain_int(relation["right_channel"]):
             return False
-        if relation["dot_product_sign"] not in (-1, 0, 1) or not _plain_int(relation["dot_product_sign"]):
+        if relation["left_channel"] != left or relation["right_channel"] != right:
             return False
-        if not _signed_decimal(relation["dot_product"]):
+        if not _plain_int(relation["dot_product_sign"]) or relation["dot_product_sign"] not in (-1, 0, 1):
             return False
-        for key in ("left_sum_squares", "right_sum_squares", "difference_sum_squares", "sum_sum_squares"):
-            if not _unsigned_decimal(relation[key]):
-                return False
+
+        dot = _safe_decimal_int(relation["dot_product"], signed=True)
+        left_energy = _safe_decimal_int(relation["left_sum_squares"])
+        right_energy = _safe_decimal_int(relation["right_sum_squares"])
+        difference_energy = _safe_decimal_int(relation["difference_sum_squares"])
+        sum_energy = _safe_decimal_int(relation["sum_sum_squares"])
+        if None in (dot, left_energy, right_energy, difference_energy, sum_energy):
+            return False
+        expected_sign = 1 if dot > 0 else -1 if dot < 0 else 0
+        if relation["dot_product_sign"] != expected_sign:
+            return False
+
         corr = relation["zero_lag_correlation_squared"]
-        if corr is not None:
+        denominator_value = left_energy * right_energy
+        if denominator_value == 0:
+            if corr is not None:
+                return False
+        else:
             if not _exact_keys(corr, {"numerator", "denominator"}):
                 return False
-            if not _unsigned_decimal(corr["numerator"]) or not _unsigned_decimal(corr["denominator"]):
-                return False
-            if corr["denominator"] == "0":
+            numerator = _safe_decimal_int(corr["numerator"])
+            denominator = _safe_decimal_int(corr["denominator"])
+            if numerator != dot * dot or denominator != denominator_value or denominator == 0:
                 return False
     return True
 
@@ -570,7 +638,7 @@ def _validate_percept_core(percept: object) -> bool:
         return False
     if not _plain_int(frame_count) or frame_count <= 0:
         return False
-    if source["bits_per_sample"] != 16 or not _plain_int(source["bits_per_sample"]):
+    if not _plain_int(source["bits_per_sample"]) or source["bits_per_sample"] != 16:
         return False
 
     expected_profile = {
@@ -598,7 +666,7 @@ def _validate_percept_core(percept: object) -> bool:
         },
         "sidecar_schema": "qsol-map-spectral-sidecar-v0.2",
     }
-    if percept["profile"] != expected_profile:
+    if not _canonical_equal(percept["profile"], expected_profile):
         return False
 
     short = percept["short_reference"]
@@ -609,14 +677,13 @@ def _validate_percept_core(percept: object) -> bool:
     for index, channel in enumerate(short["channels"]):
         if not _exact_keys(channel, {"channel_index", "complex_matrix_sha256", "power_matrix_sha256"}):
             return False
-        if channel["channel_index"] != index or not _plain_int(channel["channel_index"]):
+        if not _plain_int(channel["channel_index"]) or channel["channel_index"] != index:
             return False
         if not _hex_digest(channel["complex_matrix_sha256"]) or not _hex_digest(channel["power_matrix_sha256"]):
             return False
 
-    support = percept["frequency_support"]
     expected_support = _frequency_support(sample_rate)
-    if support != expected_support:
+    if not _canonical_equal(percept["frequency_support"], expected_support):
         return False
 
     channels = percept["channels"]
@@ -627,11 +694,17 @@ def _validate_percept_core(percept: object) -> bool:
     if not _validate_relationships(percept["channel_relationships"], channel_count):
         return False
 
-    return percept["interpretation"] == {
-        "learned_tokenization_present": False,
-        "semantic_inference_present": False,
-        "human_subjective_report_present": False,
-    }
+    interpretation = percept["interpretation"]
+    if not _exact_keys(
+        interpretation,
+        {"learned_tokenization_present", "semantic_inference_present", "human_subjective_report_present"},
+    ):
+        return False
+    return (
+        interpretation["learned_tokenization_present"] is False
+        and interpretation["semantic_inference_present"] is False
+        and interpretation["human_subjective_report_present"] is False
+    )
 
 
 def verify_multiresolution_envelope(envelope: dict) -> bool:
@@ -640,11 +713,13 @@ def verify_multiresolution_envelope(envelope: dict) -> bool:
     if envelope["schema"] != "qsol-map-percept-envelope-v0.2":
         return False
     digest = envelope["percept_sha256"]
-    percept = envelope["percept"]
-    if not _hex_digest(digest) or not _validate_percept_core(percept):
+    if not _hex_digest(digest):
         return False
     try:
+        percept = envelope["percept"]
+        if not _validate_percept_core(percept):
+            return False
         expected = domain_sha256(PERCEPT_DOMAIN, canonical_bytes(percept))
-    except (TypeError, ValueError, UnicodeError):
+    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError):
         return False
     return hmac.compare_digest(expected, digest)
