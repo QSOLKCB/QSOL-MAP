@@ -206,6 +206,10 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
     short_power = [_matrix_hasher(SHORT_POWER_MATRIX_DOMAIN) for _ in range(channel_count)]
     long_complex = [_matrix_hasher(LONG_COMPLEX_MATRIX_DOMAIN) for _ in range(channel_count)]
     long_power = [_matrix_hasher(LONG_POWER_MATRIX_DOMAIN) for _ in range(channel_count)]
+    long_aggregate = [
+        [0] * (LONG_FRAME_SIZE // 2 + 1)
+        for _ in range(channel_count)
+    ]
     records_hash = _matrix_hasher(SIDECAR_RECORDS_DOMAIN)
 
     record_count = 0
@@ -232,6 +236,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
             return False
         complex_row = []
         power_row = []
+        power_values = []
         for item in coefficients:
             if not isinstance(item, list) or len(item) != 3:
                 return False
@@ -247,6 +252,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
                 return False
             complex_row.append([item[0], item[1]])
             power_row.append(item[2])
+            power_values.append(power)
 
         if profile_id == V01_PROFILE_ID:
             _update_matrix_hash(short_complex[channel_index], complex_row)
@@ -254,6 +260,8 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         else:
             _update_matrix_hash(long_complex[channel_index], complex_row)
             _update_matrix_hash(long_power[channel_index], power_row)
+            for bin_index, power in enumerate(power_values):
+                long_aggregate[channel_index][bin_index] += power
         _update_records_hash(records_hash, record)
         record_count += 1
 
@@ -296,5 +304,8 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         if long_complex[channel_index].hexdigest() != long_channels[channel_index]["long_spectral"]["complex_matrix_sha256"]:
             return False
         if long_power[channel_index].hexdigest() != long_channels[channel_index]["long_spectral"]["power_matrix_sha256"]:
+            return False
+        reported_aggregate = long_channels[channel_index]["long_spectral"]["aggregate_power_by_bin"]
+        if reported_aggregate != [str(value) for value in long_aggregate[channel_index]]:
             return False
     return True
