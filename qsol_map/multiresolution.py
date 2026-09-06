@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from math import isqrt
 
 from . import multiresolution_core as _core
 from .tables import (
@@ -10,7 +11,7 @@ from .tables import (
     HOP_SIZE as SHORT_HOP_SIZE,
     WINDOW_WEIGHTS as SHORT_WINDOW_WEIGHTS,
 )
-from .v02_tables import LONG_FRAME_SIZE, LONG_WINDOW_WEIGHTS
+from .v02_tables import LONG_FRAME_SIZE, LONG_TOP_K, LONG_WINDOW_WEIGHTS
 
 
 _original_validate_percept_core = _core._validate_percept_core
@@ -83,10 +84,100 @@ def _relationship_gram_rank(percept: dict) -> int | None:
     return _matrix_rank(gram)
 
 
+def _relationship_channel_energies(percept: dict) -> dict[int, int] | None:
+    channel_count = percept["source"]["channels"]
+    if channel_count <= 1:
+        return {}
+    energies: dict[int, int] = {}
+    for relation in percept["channel_relationships"]:
+        left = relation["left_channel"]
+        right = relation["right_channel"]
+        left_energy = _core._safe_decimal_int(relation["left_sum_squares"])
+        right_energy = _core._safe_decimal_int(relation["right_sum_squares"])
+        if left_energy is None or right_energy is None:
+            return None
+        for channel_index, energy in ((left, left_energy), (right, right_energy)):
+            if channel_index in energies and energies[channel_index] != energy:
+                return None
+            energies[channel_index] = energy
+    return energies if len(energies) == channel_count else None
+
+
 def _short_frame_energy_bound(frame_count: int, frame_index: int) -> int:
     sample_start = frame_index * SHORT_HOP_SIZE
     available = min(SHORT_FRAME_SIZE, max(0, frame_count - sample_start))
     return _PCM16_SQUARE_MAX * _SHORT_WINDOW_SQUARE_PREFIX[available]
+
+
+def _one_long_event_matches_aggregate(channel: dict) -> bool:
+    spectral = channel["long_spectral"]
+    events = spectral["events"]
+    if len(events) != 1:
+        return True
+    aggregate: list[int] = []
+    for value in spectral["aggregate_power_by_bin"]:
+        parsed = _core._safe_decimal_int(value)
+        if parsed is None:
+            return False
+        aggregate.append(parsed)
+    event = events[0]
+    expected_bins = sorted(
+        range(len(aggregate)),
+        key=lambda bin_index: (-aggregate[bin_index], bin_index),
+    )[:LONG_TOP_K]
+    components = event["top_components"]
+    if [component["bin"] for component in components] != expected_bins:
+        return False
+    for component in components:
+        power = _core._safe_decimal_int(component["power"])
+        if power is None or power != aggregate[component["bin"]]:
+            return False
+    expected_dominant = max(
+        range(1, len(aggregate)),
+        key=lambda bin_index: (aggregate[bin_index], -bin_index),
+    )
+    return event["dominant_non_dc_bin"] == expected_dominant
+
+
+def _single_sample_relationships_are_integer_realizable(percept: dict) -> bool:
+    if percept["source"]["frame_count"] != 1:
+        return True
+
+    channels = percept["channels"]
+    event_energies: list[int] = []
+    magnitudes: list[int] = []
+    for channel in channels:
+        events = channel["long_spectral"]["events"]
+        if len(events) != 1:
+            return False
+        energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        if energy is None:
+            return False
+        magnitude = isqrt(energy)
+        if magnitude * magnitude != energy or magnitude >= (1 << 15) + 1:
+            return False
+        event_energies.append(energy)
+        magnitudes.append(magnitude)
+
+    channel_count = percept["source"]["channels"]
+    if channel_count <= 1:
+        return True
+    relationship_energies = _relationship_channel_energies(percept)
+    if relationship_energies is None:
+        return False
+    if any(
+        relationship_energies[channel_index] != event_energies[channel_index]
+        for channel_index in range(channel_count)
+    ):
+        return False
+
+    for relation in percept["channel_relationships"]:
+        left = relation["left_channel"]
+        right = relation["right_channel"]
+        dot = _core._safe_decimal_int(relation["dot_product"], signed=True)
+        if dot is None or abs(dot) != magnitudes[left] * magnitudes[right]:
+            return False
+    return True
 
 
 def _validate_percept_core(percept: object) -> bool:
@@ -96,7 +187,6 @@ def _validate_percept_core(percept: object) -> bool:
 
     source = percept["source"]
     frame_count = source["frame_count"]
-    channel_count = source["channels"]
     max_channel_energy = frame_count * _PCM16_SQUARE_MAX
     for relation in percept["channel_relationships"]:
         left_energy = _core._safe_decimal_int(relation["left_sum_squares"])
@@ -109,8 +199,12 @@ def _validate_percept_core(percept: object) -> bool:
     gram_rank = _relationship_gram_rank(percept)
     if gram_rank is None or gram_rank > frame_count:
         return False
+    if not _single_sample_relationships_are_integer_realizable(percept):
+        return False
 
     for channel in percept["channels"]:
+        if not _one_long_event_matches_aggregate(channel):
+            return False
         for event in channel["long_spectral"]["events"]:
             sample_start = event["sample_start"]
             available = min(LONG_FRAME_SIZE, max(0, frame_count - sample_start))
@@ -146,6 +240,8 @@ def _validate_percept_core(percept: object) -> bool:
         if short_event_count < 2 and (
             positive_delta_sum != 0 or maximum_positive_delta != 0
         ):
+            return False
+        if short_event_count == 2 and positive_delta_sum != maximum_positive_delta:
             return False
 
         for candidate in transient["strongest_candidates"]:
