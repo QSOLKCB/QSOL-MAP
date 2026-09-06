@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import threading
+
 from . import multiresolution as _mr
 from . import sidecar_receipts_core as _receipts_module
 from .canonical import canonical_bytes
+
+
+_LINE_LIMIT_LOCK = threading.RLock()
 
 
 def _reexport(module) -> None:
@@ -38,17 +43,22 @@ def _line_limit_modules():
 
 def verify_spectral_sidecar(envelope: dict, lines) -> bool:
     """Verify while preserving the public configurable sidecar line bound."""
-    limit = MAX_SIDECAR_LINE_CHARS
-    previous = []
-    try:
-        for module in _line_limit_modules():
-            if hasattr(module, "MAX_SIDECAR_LINE_CHARS"):
-                previous.append((module, module.MAX_SIDECAR_LINE_CHARS))
-                module.MAX_SIDECAR_LINE_CHARS = limit
-        return _receipts_module.verify_spectral_sidecar(envelope, lines)
-    finally:
-        for module, old_limit in reversed(previous):
-            module.MAX_SIDECAR_LINE_CHARS = old_limit
+    # Nested verifier modules expose the same legacy module-global limit. Keep
+    # the complete override/verification/restore interval serialized so one
+    # concurrent call cannot restore a larger previous value while another is
+    # still consuming untrusted records.
+    with _LINE_LIMIT_LOCK:
+        limit = MAX_SIDECAR_LINE_CHARS
+        previous = []
+        try:
+            for module in _line_limit_modules():
+                if hasattr(module, "MAX_SIDECAR_LINE_CHARS"):
+                    previous.append((module, module.MAX_SIDECAR_LINE_CHARS))
+                    module.MAX_SIDECAR_LINE_CHARS = limit
+            return _receipts_module.verify_spectral_sidecar(envelope, lines)
+        finally:
+            for module, old_limit in reversed(previous):
+                module.MAX_SIDECAR_LINE_CHARS = old_limit
 
 
 def write_spectral_sidecar(wave, envelope: dict, stream):
