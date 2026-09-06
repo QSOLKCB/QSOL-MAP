@@ -55,7 +55,7 @@ class MultiResolutionTests(unittest.TestCase):
         envelope = build_multiresolution_percept(wave)
         self.assertEqual(
             envelope["percept_sha256"],
-            "__V02_GOLDEN_TO_FILL__",
+            "c167694d60661ceac1d01d6504cbd8b5db77286ce09b28a342629b03046735d7",
         )
 
     def test_long_constant_signal_keeps_dc_dominant(self):
