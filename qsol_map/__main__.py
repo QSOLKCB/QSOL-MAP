@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import unicodedata
 
 from .analysis import build_percept, verify_percept_envelope
 from .canonical import canonical_bytes
@@ -49,13 +50,40 @@ def _filesystem_case_insensitive(directory: Path) -> bool:
                 pass
 
 
+def _filesystem_normalization_insensitive(directory: Path) -> bool:
+    """Probe whether an existing output directory aliases NFC/NFD names."""
+    probe_path: Path | None = None
+    try:
+        directory = directory.resolve(strict=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="QsolMapNormProbe-é-",
+            dir=directory,
+            delete=False,
+        ) as probe:
+            probe_path = Path(probe.name)
+        alternate_name = unicodedata.normalize("NFD", probe_path.name)
+        alternate = probe_path.with_name(alternate_name)
+        if alternate == probe_path or not alternate.exists():
+            return False
+        return probe_path.samefile(alternate)
+    except OSError:
+        return False
+    finally:
+        if probe_path is not None:
+            try:
+                probe_path.unlink()
+            except OSError:
+                pass
+
+
 def _same_path(left: Path, right: Path) -> bool:
     """Return whether two paths designate the same filesystem object or name.
 
     Existing paths are compared by filesystem identity first so distinct hard
     links to one inode cannot bypass the collision guard. For paths that do not
-    exist yet, exact resolved names are compared and case-equivalent basenames
-    are rejected when their shared parent filesystem is case-insensitive.
+    exist yet, exact resolved names are compared and then case/Unicode
+    normalization equivalence is checked against the behavior of the shared
+    target filesystem before either destination is created.
     """
     try:
         if left.exists() and right.exists() and left.samefile(right):
@@ -68,8 +96,16 @@ def _same_path(left: Path, right: Path) -> bool:
     if left_resolved == right_resolved:
         return True
 
-    if left_resolved.name.casefold() != right_resolved.name.casefold():
+    left_name = left_resolved.name
+    right_name = right_resolved.name
+    left_nfc = unicodedata.normalize("NFC", left_name)
+    right_nfc = unicodedata.normalize("NFC", right_name)
+    case_equivalent = left_name.casefold() == right_name.casefold()
+    normalization_equivalent = left_nfc == right_nfc
+    normalized_case_equivalent = left_nfc.casefold() == right_nfc.casefold()
+    if not normalized_case_equivalent:
         return False
+
     try:
         left_parent = left_resolved.parent.resolve(strict=True)
         right_parent = right_resolved.parent.resolve(strict=True)
@@ -77,7 +113,15 @@ def _same_path(left: Path, right: Path) -> bool:
             return False
     except OSError:
         return False
-    return _filesystem_case_insensitive(left_parent)
+
+    if case_equivalent:
+        return _filesystem_case_insensitive(left_parent)
+    if normalization_equivalent:
+        return _filesystem_normalization_insensitive(left_parent)
+    return (
+        _filesystem_case_insensitive(left_parent)
+        and _filesystem_normalization_insensitive(left_parent)
+    )
 
 
 def _same_as_stream(path: Path, stream) -> bool:
