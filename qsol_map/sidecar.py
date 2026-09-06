@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from . import multiresolution as _mr
-from . import sidecar_receipts_core as _core
+from . import sidecar_receipts_core as _receipts_module
 from .canonical import canonical_bytes
 
 
-for _name in dir(_core):
-    if not _name.startswith("__"):
-        globals()[_name] = getattr(_core, _name)
+def _reexport(module) -> None:
+    for name in dir(module):
+        if not name.startswith("__"):
+            globals()[name] = getattr(module, name)
+
+
+_reexport(_receipts_module)
 
 
 def write_spectral_sidecar(wave, envelope: dict, stream):
@@ -25,4 +29,4 @@ def write_spectral_sidecar(wave, envelope: dict, stream):
         raise ValueError(
             "sidecar percept observations and commitments must match the input WAV"
         )
-    return _core.write_spectral_sidecar(wave, envelope, stream)
+    return _receipts_module.write_spectral_sidecar(wave, envelope, stream)
