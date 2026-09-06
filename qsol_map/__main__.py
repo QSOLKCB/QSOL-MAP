@@ -23,6 +23,17 @@ def _write_envelope(envelope: dict, output_path: Path | None) -> None:
 
 
 def _same_path(left: Path, right: Path) -> bool:
+    """Return whether two output paths designate the same filesystem object.
+
+    Existing paths are compared by filesystem identity first so distinct hard
+    links to one inode cannot bypass the collision guard. The resolved-string
+    comparison remains the fallback for paths that do not exist yet.
+    """
+    try:
+        if left.exists() and right.exists() and left.samefile(right):
+            return True
+    except OSError:
+        pass
     return left.resolve(strict=False) == right.resolve(strict=False)
 
 
