@@ -23,7 +23,7 @@ from .multiresolution import (
     verify_multiresolution_envelope,
 )
 from .tables import FRAME_SIZE, HOP_SIZE
-from .v02_tables import LONG_FRAME_SIZE, LONG_HOP_SIZE
+from .v02_tables import LONG_FRAME_SIZE, LONG_HOP_SIZE, LONG_TOP_K
 from .wav import PCM16Wave
 
 SIDECAR_SCHEMA = "qsol-map-spectral-sidecar-v0.2"
@@ -202,6 +202,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
     header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
 
     channel_count = envelope["percept"]["source"]["channels"]
+    long_channels = envelope["percept"]["channels"]
     short_complex = [_matrix_hasher(SHORT_COMPLEX_MATRIX_DOMAIN) for _ in range(channel_count)]
     short_power = [_matrix_hasher(SHORT_POWER_MATRIX_DOMAIN) for _ in range(channel_count)]
     long_complex = [_matrix_hasher(LONG_COMPLEX_MATRIX_DOMAIN) for _ in range(channel_count)]
@@ -237,7 +238,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         complex_row = []
         power_row = []
         power_values = []
-        for item in coefficients:
+        for bin_index, item in enumerate(coefficients):
             if not isinstance(item, list) or len(item) != 3:
                 return False
             if not _signed_decimal(item[0]) or not _signed_decimal(item[1]) or not _unsigned_decimal(item[2]):
@@ -247,6 +248,8 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
                 imag = int(item[1])
                 power = int(item[2])
             except (TypeError, ValueError):
+                return False
+            if bin_index in (0, expected_bins - 1) and imag != 0:
                 return False
             if real * real + imag * imag != power:
                 return False
@@ -258,6 +261,38 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
             _update_matrix_hash(short_complex[channel_index], complex_row)
             _update_matrix_hash(short_power[channel_index], power_row)
         else:
+            event = long_channels[channel_index]["long_spectral"]["events"][frame_index]
+            centroid_denominator = sum(power_values)
+            centroid_numerator = sum(
+                bin_index * power for bin_index, power in enumerate(power_values)
+            )
+            ranked = sorted(
+                range(expected_bins),
+                key=lambda bin_index: (-power_values[bin_index], bin_index),
+            )[:LONG_TOP_K]
+            dominant_non_dc = max(
+                range(1, expected_bins),
+                key=lambda bin_index: (power_values[bin_index], -bin_index),
+            )
+            expected_components = [
+                {
+                    "bin": bin_index,
+                    "real": coefficients[bin_index][0],
+                    "imag": coefficients[bin_index][1],
+                    "power": coefficients[bin_index][2],
+                }
+                for bin_index in ranked
+            ]
+            if event["spectral_centroid_bin"] != {
+                "numerator": str(centroid_numerator),
+                "denominator": str(centroid_denominator),
+            }:
+                return False
+            if event["dominant_non_dc_bin"] != dominant_non_dc:
+                return False
+            if event["top_components"] != expected_components:
+                return False
+
             _update_matrix_hash(long_complex[channel_index], complex_row)
             _update_matrix_hash(long_power[channel_index], power_row)
             for bin_index, power in enumerate(power_values):
@@ -295,7 +330,6 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         pass
 
     short_commitments = envelope["percept"]["short_reference"]["channels"]
-    long_channels = envelope["percept"]["channels"]
     for channel_index in range(channel_count):
         if short_complex[channel_index].hexdigest() != short_commitments[channel_index]["complex_matrix_sha256"]:
             return False
