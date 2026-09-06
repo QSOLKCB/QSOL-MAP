@@ -137,6 +137,32 @@ energy-rise-3-over-2-v0.2
 
 The compact packet records candidate count, total positive energy delta, maximum positive delta and up to the 16 strongest candidates. Strongest candidates are ordered by descending positive delta, then ascending frame index.
 
+Each reported candidate records:
+
+- short-profile frame index;
+- exact sample start;
+- previous energy;
+- current energy;
+- exact positive delta;
+- `rise_ratio`.
+
+For non-zero previous energy:
+
+```json
+"rise_ratio": {
+  "numerator": "current_energy",
+  "denominator": "previous_energy"
+}
+```
+
+When the previous energy is exactly zero, the finite ratio is undefined and the canonical representation is:
+
+```json
+"rise_ratio": null
+```
+
+A zero denominator is never emitted.
+
 This is an authored deterministic energy-rise detector. It is **not** claimed to be equivalent to a human auditory onset percept or a validated music-information-retrieval onset detector.
 
 ## 8. Channel relationships
@@ -150,6 +176,8 @@ For every ordered pair `i < j`, the compact packet records exact full-source int
 - sum-of-squares of `left - right`;
 - sum-of-squares of `left + right`;
 - exact rational zero-lag correlation squared when both channel energies are non-zero.
+
+When either channel has zero total energy, `zero_lag_correlation_squared` is `null`.
 
 These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
 
@@ -179,7 +207,37 @@ SHA256(
 
 Identity-bearing JSON remains float-free. Large exact integers are decimal strings.
 
-## 10. Optional full spectral sidecar
+The package implementation identifier is:
+
+```text
+qsol-map-python-reference-0.2.0
+```
+
+and the package version is `0.2.0`.
+
+## 10. Verification contract
+
+The compact v0.2 verifier is fail-closed for untrusted data.
+
+It requires:
+
+- exact envelope/core schemas;
+- Layer-1 identity;
+- exact implementation/profile definitions;
+- canonical source metadata;
+- exact typed integer fields rather than Python Boolean/int equality aliases;
+- canonical matrix/source SHA-256 digests;
+- valid bounded decimal strings;
+- valid long-event structure;
+- valid transient rule structure and arithmetic;
+- valid channel-pair structure and correlation arithmetic;
+- the final domain-separated percept digest.
+
+Untrusted decimal strings are bounded to at most 1024 digits before `int()` conversion. This is both a format bound and a fail-closed guard against Python's configurable integer-string digit limit.
+
+Malformed documents must produce `False` from verification rather than escaping the Boolean verifier contract through conversion errors.
+
+## 11. Optional full spectral sidecar
 
 The compact packet commits full matrices without embedding every coefficient. v0.2 optionally exports the full short+long evidence as canonical NDJSON:
 
@@ -200,13 +258,23 @@ Every coefficient entry is:
 ["real", "imag", "power"]
 ```
 
-where all three are canonical decimal strings and `power = real^2 + imag^2`.
+where all three are canonical bounded decimal strings and `power = real^2 + imag^2`.
 
-The verifier checks canonical line encoding, row order, arithmetic, record receipt and reconstructed short/long matrix commitments against the compact percept.
+The verifier checks:
+
+- canonical line encoding;
+- exact canonical header bytes;
+- exact deterministic row order;
+- plain non-Boolean integer channel/frame/sample position fields;
+- coefficient decimal syntax and bounds;
+- coefficient power arithmetic;
+- records receipt and trailer receipt;
+- reconstructed short/long matrix commitments against the compact percept;
+- no missing or extra records.
 
 The writer/verifier process one spectral row at a time rather than constructing full matrices in memory.
 
-## 11. CLI
+## 12. CLI
 
 ```bash
 python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json
@@ -215,6 +283,8 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
+The compact percept output and sidecar output must identify different filesystem paths. A collision is rejected before either output is written.
+
 The original v0.1 commands remain available:
 
 ```bash
@@ -222,7 +292,7 @@ python3 -m qsol_map analyze input.wav -o percept-v01.json
 python3 -m qsol_map verify percept-v01.json
 ```
 
-## 12. Golden vectors
+## 13. Golden vectors
 
 The test suite freezes both:
 
@@ -237,13 +307,21 @@ c167694d60661ceac1d01d6504cbd8b5db77286ce09b28a342629b03046735d7
 
 for the fixture defined in `tests/test_multiresolution.py`.
 
-## 13. Optimization boundary
+## 14. Optimization boundary
 
 The exact Python implementation remains the authority path. The analysis loops process one frame at a time and the full-evidence sidecar streams rows instead of materializing complete matrices.
 
 `QSOLKCB/OPT` remains the optimization policy source. Performance measurements must include target environment/toolchain context. No portable speedup is claimed by this profile.
 
-## 14. Non-goals
+The environment-scoped benchmark must run from an ordinary checkout:
+
+```bash
+python3 scripts/benchmark_v02.py
+```
+
+It is not a CI performance gate.
+
+## 15. Non-goals
 
 v0.2 is not:
 
@@ -255,4 +333,5 @@ v0.2 is not:
 - learned tokenization;
 - a spatial-audio geometry solver;
 - a validated human-onset detector;
-- a realtime-performance guarantee.
+- a realtime-performance guarantee;
+- a portable benchmark claim.
