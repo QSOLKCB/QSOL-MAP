@@ -179,6 +179,8 @@ The aggregate profile binds the frozen v0.1 percept hash and per-channel v0.1 ma
 - frozen Q15 1024-point twiddles;
 - exact unbounded-integer Python reference arithmetic.
 
+The complete identity-bearing quarter-wave Q15 table and the exact quadrant/sine reconstruction rule are normative in `spec/QSOL-MAP-MULTIRES-v0.2.md`. The long transform does not depend on an unstated rounding or runtime trigonometric convention.
+
 The long profile provides finer frequency-bin spacing while the short profile preserves finer temporal sampling. QSOL-MAP does not claim that either resolution is a complete perceptual model.
 
 ## 7. High-sample-rate treatment
@@ -215,7 +217,7 @@ The rule is explicitly authored and versioned as `energy-rise-3-over-2-v0.2`.
 
 For a transition from zero previous energy, `rise_ratio` is `null` rather than a rational value with a zero denominator. For non-zero previous energy, the packet stores the exact finite ratio `current / previous` as decimal-string numerator and denominator.
 
-Candidate energies and summary totals must fit the source-sized PCM16 maximum induced by the frozen 256-sample triangular window. If fewer than two short frames exist, no transition can be formed and both transient summary totals are zero.
+Candidate energies and summary totals must fit the source-sized PCM16 maximum induced by the frozen 256-sample triangular window. If fewer than two short frames exist, no transition can be formed and both transient summary totals are zero. The total positive delta is bounded by transition multiplicity, and candidates omitted beyond the 16 reported strongest entries still contribute at least one positive integer unit each to the summary.
 
 This is a deterministic L1 event rule, not a validated model of human onset perception.
 
@@ -231,6 +233,8 @@ For each pair `i < j`, v0.2 records exact full-source integer quantities includi
 - zero-lag correlation squared when both channel energies are non-zero.
 
 The complete channel Gram matrix must be positive semidefinite and its exact rank must not exceed the source frame count. This preserves joint feasibility in the actual sample-dimensional space, rather than validating only pairwise arithmetic.
+
+Short sources have additional integer-realizability checks. For two-frame multichannel sources, one joint feasible PCM16 vector assignment must satisfy all Gram products and reproduce each channel's exact long-window weighted energy under the committed weights.
 
 These are signal relationships. They do not infer speaker geometry, source direction, or perceived stereo width.
 
@@ -251,10 +255,12 @@ It is canonical NDJSON containing:
 3. every v0.2 long spectral row in deterministic channel/frame order;
 4. one receipt trailer.
 
+Each record is exact UTF-8 terminated by one LF byte. CRLF is non-canonical even when a text wrapper would otherwise translate it to `\n`; file-backed verification inspects the underlying bytes before newline translation.
+
 Each coefficient entry is `["real","imag","power"]`, with canonical bounded decimal strings and exact `power = real^2 + imag^2` verification.
 
 The sidecar verifier checks:
-- canonical line encoding and bounded reads;
+- canonical UTF-8/LF line encoding and bounded reads;
 - exact header identity;
 - plain non-Boolean integer position fields;
 - deterministic row order;
@@ -269,7 +275,7 @@ The sidecar verifier checks:
 - channel relationships rebuilt from recovered PCM;
 - no missing, extra or decode-failed records.
 
-The public sidecar writer first rebuilds the deterministic v0.2 percept from the supplied WAV and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments.
+The public sidecar writer first rebuilds the deterministic v0.2 percept from the supplied WAV and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments. It also requires an empty seekable destination at position zero, preventing appended or stale-tail sidecars from receiving a successful receipt.
 
 The verifier uses bounded temporary spools for reconstructed PCM instead of materializing complete spectral matrices or an unbounded waveform in memory.
 
@@ -283,11 +289,11 @@ Identity-bearing decimal strings are bounded before conversion to Python integer
 
 Boolean values are not accepted where schema fields require integers, even though Python considers `False == 0` and `True == 1` in ordinary equality.
 
-Long-frame and transient energies are bounded by source-sized PCM16/window maxima. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions.
+Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions.
 
 Canonical byte comparison is used where exact typed structure matters.
 
-Output-path collision checks use filesystem identity for existing paths and probe case sensitivity for initially nonexistent case-equivalent names in a shared output directory.
+Output-path collision checks use filesystem identity for existing paths and probe both case folding and Unicode normalization equivalence for initially nonexistent names in a shared output directory when the target filesystem aliases those spellings.
 
 ## 12. SoundStream relationship
 
