@@ -108,6 +108,15 @@ class CliTests(unittest.TestCase):
             self.assertEqual(output.read_text(encoding="utf-8"), "sentinel")
             self.assertEqual(sidecar.read_text(encoding="utf-8"), "sentinel")
 
+    def test_v02_recursive_json_decode_fails_closed_at_cli_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "deep.json"
+            input_path.write_text(
+                "[" * 60_000 + "0" + "]" * 60_000,
+                encoding="utf-8",
+            )
+            self.assertEqual(main(["verify-v0.2", str(input_path)]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
