@@ -84,7 +84,7 @@ def _exact_keys(value: object, keys: set[str]) -> bool:
 def _canonical_equal(left: object, right: object) -> bool:
     try:
         return canonical_bytes(left) == canonical_bytes(right)
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, RecursionError):
         return False
 
 
@@ -403,6 +403,8 @@ def _validate_top_components(components: object) -> bool:
     if not isinstance(components, list) or len(components) != LONG_TOP_K:
         return False
     bins: set[int] = set()
+    previous_power: int | None = None
+    previous_bin: int | None = None
     for component in components:
         if not _exact_keys(component, {"bin", "real", "imag", "power"}):
             return False
@@ -419,6 +421,13 @@ def _validate_top_components(components: object) -> bool:
             return False
         if power != real * real + imag * imag:
             return False
+        if previous_power is not None:
+            if power > previous_power:
+                return False
+            if power == previous_power and previous_bin is not None and bin_index < previous_bin:
+                return False
+        previous_power = power
+        previous_bin = bin_index
     return True
 
 
@@ -444,7 +453,11 @@ def _validate_long_event(event: object, index: int) -> bool:
     centroid = event["spectral_centroid_bin"]
     if not _exact_keys(centroid, {"numerator", "denominator"}):
         return False
-    if not _unsigned_decimal(centroid["numerator"]) or not _unsigned_decimal(centroid["denominator"]):
+    numerator = _safe_decimal_int(centroid["numerator"])
+    denominator = _safe_decimal_int(centroid["denominator"])
+    if numerator is None or denominator is None:
+        return False
+    if numerator > (LONG_FRAME_SIZE // 2) * denominator:
         return False
     dominant = event["dominant_non_dc_bin"]
     if not _plain_int(dominant) or not 1 <= dominant <= LONG_FRAME_SIZE // 2:
@@ -511,9 +524,9 @@ def _validate_transient(value: object, short_event_count: int) -> bool:
         else:
             if not _exact_keys(ratio, {"numerator", "denominator"}):
                 return False
-            numerator = _safe_decimal_int(ratio["numerator"])
-            denominator = _safe_decimal_int(ratio["denominator"])
-            if numerator != current_energy or denominator != previous_energy or denominator == 0:
+            ratio_numerator = _safe_decimal_int(ratio["numerator"])
+            ratio_denominator = _safe_decimal_int(ratio["denominator"])
+            if ratio_numerator != current_energy or ratio_denominator != previous_energy or ratio_denominator == 0:
                 return False
 
         if previous_strength is not None:
@@ -618,15 +631,18 @@ def _validate_relationships(value: object, channel_count: int) -> bool:
 
         corr = relation["zero_lag_correlation_squared"]
         denominator_value = left_energy * right_energy
+        numerator_value = dot * dot
+        if numerator_value > denominator_value:
+            return False
         if denominator_value == 0:
             if corr is not None:
                 return False
         else:
             if not _exact_keys(corr, {"numerator", "denominator"}):
                 return False
-            numerator = _safe_decimal_int(corr["numerator"])
-            denominator = _safe_decimal_int(corr["denominator"])
-            if numerator != dot * dot or denominator != denominator_value or denominator == 0:
+            corr_numerator = _safe_decimal_int(corr["numerator"])
+            corr_denominator = _safe_decimal_int(corr["denominator"])
+            if corr_numerator != numerator_value or corr_denominator != denominator_value or corr_denominator == 0:
                 return False
     return True
 
@@ -744,6 +760,6 @@ def verify_multiresolution_envelope(envelope: dict) -> bool:
         if not _validate_percept_core(percept):
             return False
         expected = domain_sha256(PERCEPT_DOMAIN, canonical_bytes(percept))
-    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError):
+    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
         return False
     return hmac.compare_digest(expected, digest)
