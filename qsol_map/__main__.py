@@ -60,6 +60,8 @@ def _analyze(input_path: Path, output_path: Path | None) -> int:
 def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path | None) -> int:
     if output_path is not None and _same_path(input_path, output_path):
         raise ValueError("percept output must not overwrite the input WAV")
+    if output_path is None and _same_as_stream(input_path, sys.stdout):
+        raise ValueError("stdout percept output must not alias the input WAV")
     if sidecar_path is not None and _same_path(input_path, sidecar_path):
         raise ValueError("sidecar output must not overwrite the input WAV")
     if output_path is not None and sidecar_path is not None and _same_path(output_path, sidecar_path):
