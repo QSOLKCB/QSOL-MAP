@@ -42,6 +42,47 @@ def _line_limit_modules():
     return unique
 
 
+def _ensure_empty_destination(stream) -> None:
+    """Require a provably empty sidecar destination before emitting a header.
+
+    A canonical sidecar is a complete stream beginning with exactly one header.
+    Appending to prior content, or overwriting only a prefix while leaving stale
+    trailing bytes, can return a receipt for a stream the verifier must reject.
+    Seekable destinations are therefore accepted only when both the current
+    position and total length are zero. Non-seekable destinations cannot prove
+    that property and fail closed.
+    """
+    if isinstance(stream, io.StringIO):
+        try:
+            position = stream.tell()
+            stream.seek(0, io.SEEK_END)
+            end = stream.tell()
+            stream.seek(position)
+        except (OSError, ValueError) as exc:
+            raise ValueError("sidecar destination must be seekable and empty") from exc
+        if position != 0 or end != 0:
+            raise ValueError("sidecar destination must be empty and positioned at zero")
+        return
+
+    binary = getattr(stream, "buffer", None)
+    if binary is None:
+        raise ValueError(
+            "sidecar text stream must be StringIO or expose a writable binary buffer"
+        )
+    flush = getattr(stream, "flush", None)
+    if callable(flush):
+        flush()
+    try:
+        position = binary.tell()
+        binary.seek(0, io.SEEK_END)
+        end = binary.tell()
+        binary.seek(position)
+    except (AttributeError, OSError, ValueError) as exc:
+        raise ValueError("sidecar destination must be seekable and empty") from exc
+    if position != 0 or end != 0:
+        raise ValueError("sidecar destination must be empty and positioned at zero")
+
+
 class _ExactUTF8TextSink:
     """Present a text ``write`` API while preserving canonical UTF-8 bytes.
 
@@ -108,5 +149,6 @@ def write_spectral_sidecar(wave, envelope: dict, stream):
         raise ValueError(
             "sidecar percept observations and commitments must match the input WAV"
         )
+    _ensure_empty_destination(stream)
     exact_stream = _ExactUTF8TextSink(stream)
     return _receipts_module.write_spectral_sidecar(wave, envelope, exact_stream)
