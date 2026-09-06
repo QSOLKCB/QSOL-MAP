@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import threading
 
 from . import multiresolution as _mr
@@ -41,6 +42,39 @@ def _line_limit_modules():
     return unique
 
 
+class _ExactUTF8TextSink:
+    """Present a text ``write`` API while preserving canonical UTF-8 bytes.
+
+    ``TextIOWrapper`` may translate ``\n`` on write, notably to CRLF on
+    Windows when opened with ``newline=None``. For binary-backed text streams
+    we therefore flush any pending text and write encoded bytes directly to
+    the underlying buffer. ``StringIO`` is safe because it performs no newline
+    translation. Other opaque text sinks cannot prove byte-exact behavior and
+    are rejected rather than silently emitting non-canonical NDJSON.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._binary = getattr(stream, "buffer", None)
+        if self._binary is not None and callable(getattr(self._binary, "write", None)):
+            flush = getattr(stream, "flush", None)
+            if callable(flush):
+                flush()
+        elif isinstance(stream, io.StringIO):
+            self._binary = None
+        else:
+            raise ValueError(
+                "sidecar text stream must be StringIO or expose a writable binary buffer"
+            )
+
+    def write(self, text: str):
+        if not isinstance(text, str):
+            raise TypeError("sidecar writer accepts text records only")
+        if self._binary is not None:
+            return self._binary.write(text.encode("utf-8"))
+        return self._stream.write(text)
+
+
 def verify_spectral_sidecar(envelope: dict, lines) -> bool:
     """Verify while preserving the public configurable sidecar line bound."""
     # Nested verifier modules expose the same legacy module-global limit. Keep
@@ -74,4 +108,5 @@ def write_spectral_sidecar(wave, envelope: dict, stream):
         raise ValueError(
             "sidecar percept observations and commitments must match the input WAV"
         )
-    return _receipts_module.write_spectral_sidecar(wave, envelope, stream)
+    exact_stream = _ExactUTF8TextSink(stream)
+    return _receipts_module.write_spectral_sidecar(wave, envelope, exact_stream)
