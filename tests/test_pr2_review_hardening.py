@@ -267,7 +267,7 @@ class PR2ReviewHardeningTests(unittest.TestCase):
         )
         self.assertEqual(
             trailer["receipt_sha256"],
-            "__RECEIPT_SHA256__",
+            "fb5d65a221ef74c542ad542d2c1a8d7b5a48b9334a0c113a25ff0b75bdafe2fc",
         )
 
 
