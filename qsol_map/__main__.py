@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -23,7 +24,7 @@ def _write_envelope(envelope: dict, output_path: Path | None) -> None:
 
 
 def _same_path(left: Path, right: Path) -> bool:
-    """Return whether two output paths designate the same filesystem object.
+    """Return whether two paths designate the same filesystem object.
 
     Existing paths are compared by filesystem identity first so distinct hard
     links to one inode cannot bypass the collision guard. The resolved-string
@@ -37,6 +38,19 @@ def _same_path(left: Path, right: Path) -> bool:
     return left.resolve(strict=False) == right.resolve(strict=False)
 
 
+def _same_as_stream(path: Path, stream) -> bool:
+    """Return whether an existing path aliases the stream's open file object."""
+    try:
+        path_stat = path.stat()
+        stream_stat = os.fstat(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return (
+        path_stat.st_dev == stream_stat.st_dev
+        and path_stat.st_ino == stream_stat.st_ino
+    )
+
+
 def _analyze(input_path: Path, output_path: Path | None) -> int:
     wave = parse_pcm16_wav(input_path.read_bytes())
     _write_envelope(build_percept(wave), output_path)
@@ -44,8 +58,14 @@ def _analyze(input_path: Path, output_path: Path | None) -> int:
 
 
 def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path | None) -> int:
+    if output_path is not None and _same_path(input_path, output_path):
+        raise ValueError("percept output must not overwrite the input WAV")
+    if sidecar_path is not None and _same_path(input_path, sidecar_path):
+        raise ValueError("sidecar output must not overwrite the input WAV")
     if output_path is not None and sidecar_path is not None and _same_path(output_path, sidecar_path):
         raise ValueError("percept output and sidecar output must be different paths")
+    if output_path is None and sidecar_path is not None and _same_as_stream(sidecar_path, sys.stdout):
+        raise ValueError("sidecar output must not alias stdout when the percept is written to stdout")
 
     wave = parse_pcm16_wav(input_path.read_bytes())
     envelope = build_multiresolution_percept(wave)
