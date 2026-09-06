@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             return _verify_v02(args.input)
         if args.command == "verify-sidecar-v0.2":
             return _verify_sidecar(args.percept, args.sidecar)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2
