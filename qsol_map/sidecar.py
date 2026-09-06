@@ -1,198 +1,80 @@
-"""Streaming full-spectral sidecar for QSOL-MAP v0.2."""
+"""QSOL-MAP v0.2 sidecar API with cross-profile evidence consistency checks."""
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
-from typing import Iterable, TextIO
+import struct
+import tempfile
+from typing import Iterable
 
-from .analysis import _fixed_fft_real, _windowed_frame
-from .canonical import canonical_bytes, domain_sha256
-from .multiresolution import (
-    LONG_COMPLEX_MATRIX_DOMAIN,
-    LONG_POWER_MATRIX_DOMAIN,
-    LONG_PROFILE_ID,
-    V01_PROFILE_ID,
-    _fixed_fft_long,
-    _hex_digest,
-    _plain_int,
-    _signed_decimal,
-    _unsigned_decimal,
-    _windowed_long_frame,
-    verify_multiresolution_envelope,
+from . import multiresolution as _mr
+from . import sidecar_core as _core
+from .tables import (
+    FRAME_SIZE as _SHORT_FRAME_SIZE,
+    HOP_SIZE as _SHORT_HOP_SIZE,
+    Q15_ONE as _SHORT_Q15_ONE,
+    TWIDDLE_COS_Q15 as _SHORT_TWIDDLE_COS,
+    TWIDDLE_SIN_Q15 as _SHORT_TWIDDLE_SIN,
+    WINDOW_WEIGHTS as _SHORT_WINDOW_WEIGHTS,
 )
-from .tables import FRAME_SIZE, HOP_SIZE
 from .v02_tables import (
-    LONG_FRAME_SIZE,
-    LONG_HOP_SIZE,
-    LONG_TOP_K,
-    Q15_ONE,
-    TWIDDLE_COS_Q15_1024,
-    TWIDDLE_SIN_Q15_1024,
+    LONG_FRAME_SIZE as _LONG_FRAME_SIZE,
+    LONG_HOP_SIZE as _LONG_HOP_SIZE,
+    Q15_ONE as _LONG_Q15_ONE,
+    TWIDDLE_COS_Q15_1024 as _LONG_TWIDDLE_COS,
+    TWIDDLE_SIN_Q15_1024 as _LONG_TWIDDLE_SIN,
+    LONG_WINDOW_WEIGHTS as _LONG_WINDOW_WEIGHTS,
 )
-from .wav import PCM16Wave
-
-SIDECAR_SCHEMA = "qsol-map-spectral-sidecar-v0.2"
-SIDECAR_HEADER_DOMAIN = "QSOL-MAP/SIDECAR-HEADER/v0.2"
-SIDECAR_RECORDS_DOMAIN = "QSOL-MAP/SIDECAR-RECORDS/v0.2"
-SIDECAR_RECEIPT_DOMAIN = "QSOL-MAP/SIDECAR-RECEIPT/v0.2"
-SHORT_COMPLEX_MATRIX_DOMAIN = "QSOL-MAP/COMPLEX-MATRIX/v0.1"
-SHORT_POWER_MATRIX_DOMAIN = "QSOL-MAP/POWER-MATRIX/v0.1"
-MAX_SIDECAR_LINE_CHARS = 4_000_000
 
 
-def _matrix_hasher(domain: str) -> "hashlib._Hash":
-    hasher = hashlib.sha256()
-    hasher.update(domain.encode("utf-8") + b"\x00")
-    return hasher
+# Preserve the established sidecar writer, constants, and helper surface.
+for _name in dir(_core):
+    if not _name.startswith("__"):
+        globals()[_name] = getattr(_core, _name)
 
 
-def _update_matrix_hash(hasher: "hashlib._Hash", row: object) -> None:
-    encoded = canonical_bytes(row)
-    hasher.update(len(encoded).to_bytes(8, "big"))
-    hasher.update(encoded)
-
-
-def _update_records_hash(hasher: "hashlib._Hash", record: dict) -> None:
-    encoded = canonical_bytes(record)
-    hasher.update(len(encoded).to_bytes(8, "big"))
-    hasher.update(encoded)
-
-
-def _header(wave: PCM16Wave, envelope: dict) -> dict:
-    return {
-        "record_type": "header",
-        "schema": SIDECAR_SCHEMA,
-        "percept_sha256": envelope["percept_sha256"],
-        "source": envelope["percept"]["source"],
-        "profiles": [
-            {
-                "id": V01_PROFILE_ID,
-                "frame_size_samples": FRAME_SIZE,
-                "hop_size_samples": HOP_SIZE,
-                "bin_count": FRAME_SIZE // 2 + 1,
-            },
-            {
-                "id": LONG_PROFILE_ID,
-                "frame_size_samples": LONG_FRAME_SIZE,
-                "hop_size_samples": LONG_HOP_SIZE,
-                "bin_count": LONG_FRAME_SIZE // 2 + 1,
-            },
-        ],
-    }
-
-
-def _frame_record(profile_id: str, channel_index: int, frame_index: int, start: int, coefficients) -> dict:
-    return {
-        "record_type": "spectral_frame",
-        "profile_id": profile_id,
-        "channel_index": channel_index,
-        "frame_index": frame_index,
-        "sample_start": start,
-        "coefficients": [
-            [str(real), str(imag), str(real * real + imag * imag)]
-            for real, imag in coefficients
-        ],
-    }
-
-
-def _write_record(stream: TextIO, record: dict) -> None:
-    stream.write(canonical_bytes(record).decode("utf-8"))
-    stream.write("\n")
-
-
-def write_spectral_sidecar(wave: PCM16Wave, envelope: dict, stream: TextIO) -> dict:
-    """Write deterministic canonical-NDJSON spectral evidence with bounded row memory."""
-    if not verify_multiresolution_envelope(envelope):
-        raise ValueError("sidecar requires a valid v0.2 percept envelope")
-    source = envelope["percept"]["source"]
-    if source["wav_sha256"] != wave.source_sha256 or source["pcm_s16le_sha256"] != wave.pcm_s16le_sha256:
-        raise ValueError("sidecar source does not match percept source")
-    if source["sample_rate_hz"] != wave.sample_rate_hz or source["channels"] != wave.channels or source["frame_count"] != wave.frame_count:
-        raise ValueError("sidecar source metadata does not match percept source")
-
-    header = _header(wave, envelope)
-    _write_record(stream, header)
-    header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
-
-    records_hash = _matrix_hasher(SIDECAR_RECORDS_DOMAIN)
-    record_count = 0
-
-    for channel_index, samples in enumerate(wave.samples_by_channel):
-        for frame_index, start in enumerate(range(0, len(samples), HOP_SIZE)):
-            coefficients = _fixed_fft_real(_windowed_frame(samples, start))
-            record = _frame_record(V01_PROFILE_ID, channel_index, frame_index, start, coefficients)
-            _write_record(stream, record)
-            _update_records_hash(records_hash, record)
-            record_count += 1
-
-    for channel_index, samples in enumerate(wave.samples_by_channel):
-        for frame_index, start in enumerate(range(0, len(samples), LONG_HOP_SIZE)):
-            coefficients = _fixed_fft_long(_windowed_long_frame(samples, start))
-            record = _frame_record(LONG_PROFILE_ID, channel_index, frame_index, start, coefficients)
-            _write_record(stream, record)
-            _update_records_hash(records_hash, record)
-            record_count += 1
-
-    records_sha256 = records_hash.hexdigest()
-    receipt_core = {
-        "header_sha256": header_sha256,
-        "records_sha256": records_sha256,
-        "record_count": record_count,
-    }
-    receipt_sha256 = domain_sha256(SIDECAR_RECEIPT_DOMAIN, canonical_bytes(receipt_core))
-    trailer = {
-        "record_type": "trailer",
-        **receipt_core,
-        "receipt_sha256": receipt_sha256,
-    }
-    _write_record(stream, trailer)
-    return trailer
-
-
-def _canonical_line(line: str) -> dict | None:
-    if len(line) > MAX_SIDECAR_LINE_CHARS or not line.endswith("\n"):
-        return None
-    raw = line[:-1]
-    try:
-        value = json.loads(raw)
-        if not isinstance(value, dict):
-            return None
-        if canonical_bytes(value).decode("utf-8") != raw:
-            return None
-    except (json.JSONDecodeError, TypeError, ValueError, UnicodeError, RecursionError):
-        return None
-    return value
-
-
-def _bounded_lines(lines: Iterable[str]):
-    """Consume file-backed sidecars without materializing an oversized line."""
+def _safe_bounded_lines(lines: Iterable[str]):
+    """Yield sidecar lines with bounded file reads and fail-closed decoding."""
     readline = getattr(lines, "readline", None)
     if callable(readline):
         while True:
-            line = readline(MAX_SIDECAR_LINE_CHARS + 1)
+            try:
+                line = readline(MAX_SIDECAR_LINE_CHARS + 1)
+            except UnicodeDecodeError:
+                return
             if line == "":
                 return
             yield line
             if len(line) > MAX_SIDECAR_LINE_CHARS or not line.endswith("\n"):
                 return
     else:
-        yield from lines
+        try:
+            for line in lines:
+                yield line
+        except UnicodeDecodeError:
+            return
 
 
-def _recover_windowed_energy(coefficients: list[tuple[int, int]]) -> int | None:
-    """Invert the frozen long FFT exactly enough to recover time-domain energy.
+def _bit_reverse(index: int, bits: int) -> int:
+    result = 0
+    for _ in range(bits):
+        result = (result << 1) | (index & 1)
+        index >>= 1
+    return result
 
-    The writer emits only the non-negative half of a real-input spectrum. The
-    endpoint-imaginary checks plus conjugate reconstruction recover the full
-    final butterfly state. Each frozen butterfly is then inverted with exact
-    integer divisibility checks; valid authored rows recover the original
-    bit-reversed real windowed samples, whose sum of squares is permutation
-    invariant.
-    """
-    expected_bins = LONG_FRAME_SIZE // 2 + 1
-    if len(coefficients) != expected_bins:
+
+def _recover_pcm_frame(
+    coefficients: list[tuple[int, int]],
+    *,
+    frame_size: int,
+    q15_one: int,
+    twiddle_cos: tuple[int, ...],
+    twiddle_sin: tuple[int, ...],
+    window_weights: tuple[int, ...],
+    available: int,
+) -> tuple[list[int], int] | None:
+    """Invert a frozen real-input FFT row into exact PCM samples and frame energy."""
+    expected_bins = frame_size // 2 + 1
+    if len(coefficients) != expected_bins or not 0 <= available <= frame_size:
         return None
     if coefficients[0][1] != 0 or coefficients[-1][1] != 0:
         return None
@@ -200,19 +82,19 @@ def _recover_windowed_energy(coefficients: list[tuple[int, int]]) -> int | None:
     state = [[real, imag] for real, imag in coefficients]
     state.extend([[real, -imag] for real, imag in reversed(coefficients[1:-1])])
 
-    width = LONG_FRAME_SIZE
+    width = frame_size
     while width >= 2:
         half = width // 2
-        twiddle_step = LONG_FRAME_SIZE // width
-        previous = [[0, 0] for _ in range(LONG_FRAME_SIZE)]
-        for base in range(0, LONG_FRAME_SIZE, width):
+        twiddle_step = frame_size // width
+        previous = [[0, 0] for _ in range(frame_size)]
+        for base in range(0, frame_size, width):
             for offset in range(half):
                 ar, ai = state[base + offset]
                 br, bi = state[base + offset + half]
 
                 ur_num = ar + br
                 ui_num = ai + bi
-                u_den = 2 * Q15_ONE
+                u_den = 2 * q15_one
                 if ur_num % u_den or ui_num % u_den:
                     return None
                 ur = ur_num // u_den
@@ -226,8 +108,8 @@ def _recover_windowed_energy(coefficients: list[tuple[int, int]]) -> int | None:
                 ti = di // 2
 
                 twiddle_index = offset * twiddle_step
-                wr = TWIDDLE_COS_Q15_1024[twiddle_index]
-                wi = TWIDDLE_SIN_Q15_1024[twiddle_index]
+                wr = twiddle_cos[twiddle_index]
+                wi = twiddle_sin[twiddle_index]
                 norm = wr * wr + wi * wi
                 if norm == 0:
                     return None
@@ -243,200 +125,331 @@ def _recover_windowed_energy(coefficients: list[tuple[int, int]]) -> int | None:
         state = previous
         width //= 2
 
+    bits = frame_size.bit_length() - 1
+    windowed: list[int] = []
     energy = 0
-    for real, imag in state:
+    for index in range(frame_size):
+        real, imag = state[_bit_reverse(index, bits)]
         if imag != 0:
             return None
+        windowed.append(real)
         energy += real * real
-    return energy
+
+    samples: list[int] = []
+    for index, value in enumerate(windowed):
+        if index >= available:
+            if value != 0:
+                return None
+            continue
+        weight = window_weights[index]
+        if weight <= 0 or value % weight:
+            return None
+        sample = value // weight
+        if not -(1 << 15) <= sample < (1 << 15):
+            return None
+        samples.append(sample)
+    return samples, energy
 
 
-def _expected_sequence(envelope: dict):
-    frame_count = envelope["percept"]["source"]["frame_count"]
-    channel_count = envelope["percept"]["source"]["channels"]
-    short_count = (frame_count + HOP_SIZE - 1) // HOP_SIZE
-    long_count = (frame_count + LONG_HOP_SIZE - 1) // LONG_HOP_SIZE
-    for channel_index in range(channel_count):
-        for frame_index in range(short_count):
-            yield V01_PROFILE_ID, channel_index, frame_index, frame_index * HOP_SIZE
-    for channel_index in range(channel_count):
-        for frame_index in range(long_count):
-            yield LONG_PROFILE_ID, channel_index, frame_index, frame_index * LONG_HOP_SIZE
+class _ChannelSpool:
+    def __init__(self, frame_count: int):
+        self.frame_count = frame_count
+        self.stream = tempfile.TemporaryFile()
+        self.written = 0
+        self.sum_squares = 0
 
-
-def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
-    """Verify sidecar framing, row arithmetic, hashes, ordering and compact commitments."""
-    if not verify_multiresolution_envelope(envelope):
-        return False
-    iterator = iter(_bounded_lines(lines))
-    try:
-        first_line = next(iterator)
-    except StopIteration:
-        return False
-    header = _canonical_line(first_line)
-    expected_header = {
-        "record_type": "header",
-        "schema": SIDECAR_SCHEMA,
-        "percept_sha256": envelope["percept_sha256"],
-        "source": envelope["percept"]["source"],
-        "profiles": [
-            {"id": V01_PROFILE_ID, "frame_size_samples": FRAME_SIZE, "hop_size_samples": HOP_SIZE, "bin_count": FRAME_SIZE // 2 + 1},
-            {"id": LONG_PROFILE_ID, "frame_size_samples": LONG_FRAME_SIZE, "hop_size_samples": LONG_HOP_SIZE, "bin_count": LONG_FRAME_SIZE // 2 + 1},
-        ],
-    }
-    if header is None:
-        return False
-    try:
-        if canonical_bytes(header) != canonical_bytes(expected_header):
+    def merge(self, sample_start: int, samples: list[int]) -> bool:
+        if sample_start < 0 or sample_start > self.written:
             return False
-    except (TypeError, ValueError, UnicodeError, RecursionError):
-        return False
-    header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
-
-    channel_count = envelope["percept"]["source"]["channels"]
-    long_channels = envelope["percept"]["channels"]
-    short_complex = [_matrix_hasher(SHORT_COMPLEX_MATRIX_DOMAIN) for _ in range(channel_count)]
-    short_power = [_matrix_hasher(SHORT_POWER_MATRIX_DOMAIN) for _ in range(channel_count)]
-    long_complex = [_matrix_hasher(LONG_COMPLEX_MATRIX_DOMAIN) for _ in range(channel_count)]
-    long_power = [_matrix_hasher(LONG_POWER_MATRIX_DOMAIN) for _ in range(channel_count)]
-    long_aggregate = [
-        [0] * (LONG_FRAME_SIZE // 2 + 1)
-        for _ in range(channel_count)
-    ]
-    records_hash = _matrix_hasher(SIDECAR_RECORDS_DOMAIN)
-
-    record_count = 0
-    for profile_id, channel_index, frame_index, sample_start in _expected_sequence(envelope):
-        try:
-            line = next(iterator)
-        except StopIteration:
-            return False
-        record = _canonical_line(line)
-        if record is None or set(record) != {
-            "record_type", "profile_id", "channel_index", "frame_index", "sample_start", "coefficients"
-        }:
-            return False
-        if record["record_type"] != "spectral_frame" or record["profile_id"] != profile_id:
-            return False
-        if not _plain_int(record["channel_index"]) or not _plain_int(record["frame_index"]) or not _plain_int(record["sample_start"]):
-            return False
-        if record["channel_index"] != channel_index or record["frame_index"] != frame_index or record["sample_start"] != sample_start:
+        end = sample_start + len(samples)
+        if end > self.frame_count:
             return False
 
-        coefficients = record["coefficients"]
-        expected_bins = FRAME_SIZE // 2 + 1 if profile_id == V01_PROFILE_ID else LONG_FRAME_SIZE // 2 + 1
-        if not isinstance(coefficients, list) or len(coefficients) != expected_bins:
-            return False
-        complex_row = []
-        power_row = []
-        power_values = []
-        parsed_coefficients: list[tuple[int, int]] = []
-        for bin_index, item in enumerate(coefficients):
+        overlap = min(len(samples), max(0, self.written - sample_start))
+        if overlap:
+            self.stream.seek(sample_start * 2)
+            existing = self.stream.read(overlap * 2)
+            if len(existing) != overlap * 2:
+                return False
+            prior = [value for (value,) in struct.iter_unpack("<h", existing)]
+            if prior != samples[:overlap]:
+                return False
+
+        new_offset = max(0, self.written - sample_start)
+        new_samples = samples[new_offset:]
+        if new_samples:
+            self.stream.seek(self.written * 2)
+            self.stream.write(struct.pack("<" + "h" * len(new_samples), *new_samples))
+            self.sum_squares += sum(sample * sample for sample in new_samples)
+            self.written += len(new_samples)
+        return True
+
+    def complete(self) -> bool:
+        return self.written == self.frame_count
+
+    def rewind(self) -> None:
+        self.stream.seek(0)
+
+    def close(self) -> None:
+        self.stream.close()
+
+
+class _TransientAccumulator:
+    def __init__(self):
+        self.previous_energy: int | None = None
+        self.candidate_count = 0
+        self.positive_delta_sum = 0
+        self.maximum_positive_delta = 0
+        self.strongest: list[dict] = []
+
+    def observe(self, frame_index: int, sample_start: int, current: int) -> None:
+        previous = self.previous_energy
+        if previous is not None:
+            delta = current - previous
+            positive = max(0, delta)
+            self.positive_delta_sum += positive
+            self.maximum_positive_delta = max(self.maximum_positive_delta, positive)
+            if current > previous and current * 2 >= previous * 3:
+                self.candidate_count += 1
+                ratio = None
+                if previous != 0:
+                    ratio = {
+                        "numerator": str(current),
+                        "denominator": str(previous),
+                    }
+                candidate = {
+                    "frame_index": frame_index,
+                    "sample_start": sample_start,
+                    "previous_energy": str(previous),
+                    "current_energy": str(current),
+                    "positive_delta": str(positive),
+                    "rise_ratio": ratio,
+                }
+                self.strongest.append(candidate)
+                self.strongest.sort(
+                    key=lambda item: (-int(item["positive_delta"]), item["frame_index"])
+                )
+                del self.strongest[_mr.MAX_TRANSIENT_EVENTS :]
+        self.previous_energy = current
+
+    def observation(self) -> dict:
+        return {
+            "rule_id": _mr.ONSET_RULE_ID,
+            "candidate_count": self.candidate_count,
+            "positive_delta_sum": str(self.positive_delta_sum),
+            "maximum_positive_delta": str(self.maximum_positive_delta),
+            "strongest_candidates": self.strongest,
+        }
+
+
+class _EvidenceCapture:
+    def __init__(self, envelope: dict):
+        source = envelope["percept"]["source"]
+        self.envelope = envelope
+        self.frame_count = source["frame_count"]
+        self.channel_count = source["channels"]
+        self.invalid = False
+        self.short = [_ChannelSpool(self.frame_count) for _ in range(self.channel_count)]
+        self.long = [_ChannelSpool(self.frame_count) for _ in range(self.channel_count)]
+        self.transients = [_TransientAccumulator() for _ in range(self.channel_count)]
+
+    def close(self) -> None:
+        for spool in self.short + self.long:
+            spool.close()
+
+    def _parse_coefficients(self, record: dict) -> list[tuple[int, int]] | None:
+        coefficients = record.get("coefficients")
+        if not isinstance(coefficients, list):
+            return None
+        result: list[tuple[int, int]] = []
+        for item in coefficients:
             if not isinstance(item, list) or len(item) != 3:
-                return False
-            if not _signed_decimal(item[0]) or not _signed_decimal(item[1]) or not _unsigned_decimal(item[2]):
-                return False
+                return None
+            if not _core._signed_decimal(item[0]) or not _core._signed_decimal(item[1]):
+                return None
+            if not _core._unsigned_decimal(item[2]):
+                return None
             try:
                 real = int(item[0])
                 imag = int(item[1])
                 power = int(item[2])
             except (TypeError, ValueError):
-                return False
-            if bin_index in (0, expected_bins - 1) and imag != 0:
-                return False
+                return None
             if real * real + imag * imag != power:
-                return False
-            complex_row.append([item[0], item[1]])
-            power_row.append(item[2])
-            power_values.append(power)
-            parsed_coefficients.append((real, imag))
+                return None
+            result.append((real, imag))
+        return result
 
-        if profile_id == V01_PROFILE_ID:
-            _update_matrix_hash(short_complex[channel_index], complex_row)
-            _update_matrix_hash(short_power[channel_index], power_row)
+    def feed(self, line: str) -> None:
+        if self.invalid:
+            return
+        record = _core._canonical_line(line)
+        if record is None or record.get("record_type") != "spectral_frame":
+            return
+
+        profile_id = record.get("profile_id")
+        channel_index = record.get("channel_index")
+        frame_index = record.get("frame_index")
+        sample_start = record.get("sample_start")
+        if (
+            not _core._plain_int(channel_index)
+            or not _core._plain_int(frame_index)
+            or not _core._plain_int(sample_start)
+            or not 0 <= channel_index < self.channel_count
+        ):
+            self.invalid = True
+            return
+
+        parsed = self._parse_coefficients(record)
+        if parsed is None:
+            self.invalid = True
+            return
+
+        if profile_id == _mr.V01_PROFILE_ID:
+            frame_size = _SHORT_FRAME_SIZE
+            q15_one = _SHORT_Q15_ONE
+            twiddle_cos = _SHORT_TWIDDLE_COS
+            twiddle_sin = _SHORT_TWIDDLE_SIN
+            window_weights = _SHORT_WINDOW_WEIGHTS
+            spool = self.short[channel_index]
+        elif profile_id == _mr.LONG_PROFILE_ID:
+            frame_size = _LONG_FRAME_SIZE
+            q15_one = _LONG_Q15_ONE
+            twiddle_cos = _LONG_TWIDDLE_COS
+            twiddle_sin = _LONG_TWIDDLE_SIN
+            window_weights = _LONG_WINDOW_WEIGHTS
+            spool = self.long[channel_index]
         else:
-            event = long_channels[channel_index]["long_spectral"]["events"][frame_index]
-            recovered_energy = _recover_windowed_energy(parsed_coefficients)
-            if recovered_energy is None or event["windowed_energy"] != str(recovered_energy):
-                return False
-            centroid_denominator = sum(power_values)
-            centroid_numerator = sum(
-                bin_index * power for bin_index, power in enumerate(power_values)
-            )
-            ranked = sorted(
-                range(expected_bins),
-                key=lambda bin_index: (-power_values[bin_index], bin_index),
-            )[:LONG_TOP_K]
-            dominant_non_dc = max(
-                range(1, expected_bins),
-                key=lambda bin_index: (power_values[bin_index], -bin_index),
-            )
-            expected_components = [
-                {
-                    "bin": bin_index,
-                    "real": coefficients[bin_index][0],
-                    "imag": coefficients[bin_index][1],
-                    "power": coefficients[bin_index][2],
-                }
-                for bin_index in ranked
-            ]
-            if event["spectral_centroid_bin"] != {
-                "numerator": str(centroid_numerator),
-                "denominator": str(centroid_denominator),
-            }:
-                return False
-            if event["dominant_non_dc_bin"] != dominant_non_dc:
-                return False
-            if event["top_components"] != expected_components:
-                return False
+            return
 
-            _update_matrix_hash(long_complex[channel_index], complex_row)
-            _update_matrix_hash(long_power[channel_index], power_row)
-            for bin_index, power in enumerate(power_values):
-                long_aggregate[channel_index][bin_index] += power
-        _update_records_hash(records_hash, record)
-        record_count += 1
+        available = min(frame_size, max(0, self.frame_count - sample_start))
+        recovered = _recover_pcm_frame(
+            parsed,
+            frame_size=frame_size,
+            q15_one=q15_one,
+            twiddle_cos=twiddle_cos,
+            twiddle_sin=twiddle_sin,
+            window_weights=window_weights,
+            available=available,
+        )
+        if recovered is None:
+            self.invalid = True
+            return
+        samples, energy = recovered
+        if not spool.merge(sample_start, samples):
+            self.invalid = True
+            return
+        if profile_id == _mr.V01_PROFILE_ID:
+            self.transients[channel_index].observe(frame_index, sample_start, energy)
 
+    @staticmethod
+    def _same_stream(left: _ChannelSpool, right: _ChannelSpool) -> bool:
+        left.rewind()
+        right.rewind()
+        while True:
+            left_chunk = left.stream.read(8192)
+            right_chunk = right.stream.read(8192)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+    @staticmethod
+    def _dot(left: _ChannelSpool, right: _ChannelSpool) -> tuple[int, int, int]:
+        left.rewind()
+        right.rewind()
+        dot = 0
+        difference_energy = 0
+        sum_energy = 0
+        while True:
+            left_chunk = left.stream.read(8192)
+            right_chunk = right.stream.read(8192)
+            if len(left_chunk) != len(right_chunk) or len(left_chunk) % 2:
+                raise ValueError("inconsistent reconstructed channel spool")
+            if not left_chunk:
+                return dot, difference_energy, sum_energy
+            left_values = struct.iter_unpack("<h", left_chunk)
+            right_values = struct.iter_unpack("<h", right_chunk)
+            for (left_sample,), (right_sample,) in zip(left_values, right_values):
+                dot += left_sample * right_sample
+                delta = left_sample - right_sample
+                total = left_sample + right_sample
+                difference_energy += delta * delta
+                sum_energy += total * total
+
+    def _expected_relationships(self) -> list[dict]:
+        relationships = []
+        for left_index in range(self.channel_count):
+            left = self.short[left_index]
+            for right_index in range(left_index + 1, self.channel_count):
+                right = self.short[right_index]
+                dot, difference_energy, sum_energy = self._dot(left, right)
+                left_energy = left.sum_squares
+                right_energy = right.sum_squares
+                denominator = left_energy * right_energy
+                correlation = None
+                if denominator:
+                    correlation = {
+                        "numerator": str(dot * dot),
+                        "denominator": str(denominator),
+                    }
+                relationships.append(
+                    {
+                        "left_channel": left_index,
+                        "right_channel": right_index,
+                        "dot_product": str(dot),
+                        "dot_product_sign": 1 if dot > 0 else -1 if dot < 0 else 0,
+                        "left_sum_squares": str(left_energy),
+                        "right_sum_squares": str(right_energy),
+                        "difference_sum_squares": str(difference_energy),
+                        "sum_sum_squares": str(sum_energy),
+                        "zero_lag_correlation_squared": correlation,
+                    }
+                )
+        return relationships
+
+    def validate(self) -> bool:
+        if self.invalid:
+            return False
+        if not all(spool.complete() for spool in self.short + self.long):
+            return False
+        for channel_index in range(self.channel_count):
+            if not self._same_stream(self.short[channel_index], self.long[channel_index]):
+                return False
+            reported_transient = self.envelope["percept"]["channels"][channel_index]["transient"]
+            if reported_transient != self.transients[channel_index].observation():
+                return False
+        return (
+            self.envelope["percept"]["channel_relationships"]
+            == self._expected_relationships()
+        )
+
+
+def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
+    """Verify canonical sidecar commitments and reconstruct cross-profile L1 evidence."""
+    capture: _EvidenceCapture | None = None
     try:
-        trailer_line = next(iterator)
-    except StopIteration:
-        return False
-    trailer = _canonical_line(trailer_line)
-    if trailer is None or set(trailer) != {"record_type", "header_sha256", "records_sha256", "record_count", "receipt_sha256"}:
-        return False
-    if trailer["record_type"] != "trailer":
-        return False
-    if not _plain_int(trailer["record_count"]) or trailer["record_count"] != record_count:
-        return False
-    if not _hex_digest(trailer["header_sha256"]) or not _hex_digest(trailer["records_sha256"]) or not _hex_digest(trailer["receipt_sha256"]):
-        return False
-    if trailer["header_sha256"] != header_sha256 or trailer["records_sha256"] != records_hash.hexdigest():
-        return False
-    receipt_core = {
-        "header_sha256": trailer["header_sha256"],
-        "records_sha256": trailer["records_sha256"],
-        "record_count": trailer["record_count"],
-    }
-    expected_receipt = domain_sha256(SIDECAR_RECEIPT_DOMAIN, canonical_bytes(receipt_core))
-    if not hmac.compare_digest(expected_receipt, trailer["receipt_sha256"]):
-        return False
-    try:
-        next(iterator)
-        return False
-    except StopIteration:
-        pass
+        capture = _EvidenceCapture(envelope)
 
-    short_commitments = envelope["percept"]["short_reference"]["channels"]
-    for channel_index in range(channel_count):
-        if short_complex[channel_index].hexdigest() != short_commitments[channel_index]["complex_matrix_sha256"]:
+        def instrumented():
+            for line in _safe_bounded_lines(lines):
+                capture.feed(line)
+                yield line
+
+        if not _core.verify_spectral_sidecar(envelope, instrumented()):
             return False
-        if short_power[channel_index].hexdigest() != short_commitments[channel_index]["power_matrix_sha256"]:
-            return False
-        if long_complex[channel_index].hexdigest() != long_channels[channel_index]["long_spectral"]["complex_matrix_sha256"]:
-            return False
-        if long_power[channel_index].hexdigest() != long_channels[channel_index]["long_spectral"]["power_matrix_sha256"]:
-            return False
-        reported_aggregate = long_channels[channel_index]["long_spectral"]["aggregate_power_by_bin"]
-        if reported_aggregate != [str(value) for value in long_aggregate[channel_index]]:
-            return False
-    return True
+        return capture.validate()
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        OverflowError,
+        RecursionError,
+        OSError,
+        struct.error,
+    ):
+        return False
+    finally:
+        if capture is not None:
+            capture.close()
