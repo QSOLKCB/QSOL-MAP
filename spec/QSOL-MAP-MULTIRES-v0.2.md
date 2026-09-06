@@ -223,7 +223,16 @@ windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
 
 When `a = 1`, the energy must additionally equal `x^2` for a signed PCM16 integer `x`. When `a = 2`, it must equal `x^2 + 4*y^2` for signed PCM16 integers `x` and `y`. These exact feasibility checks apply to every channel, including mono sources, and to one- or two-sample tails of longer sources. An upper bound alone does not permit an unattainable integer energy. For longer windows these checks do not claim to solve the full integer realizability problem; full sidecar verification separately reconstructs and binds the actual samples.
 
-For a channel with exactly one long event, `aggregate_power_by_bin` is its exact power row. Every entry, including omitted interior bins, must be a sum of two integer squares; DC and Nyquist must additionally be perfect squares. The compact verifier applies these bounded necessary checks to each nonzero entry: remove all powers of two and require the remaining odd part to be 1 modulo 4; require an even exponent of each prime in the fixed set `{3, 7, 11, 19, 23, 31}`. Zero is allowed. These checks reject impossible powers such as 3, 6, 12, and 21 without attempting unbounded factorization of large FFT integers. Passing them is not a complete two-square factorization proof or proof of a realizable FFT row. The single-row restriction does not apply to aggregates over multiple events, which sum more than two squares. Full sidecar verification checks the actual integer coefficients.
+For a channel with exactly one long event, `aggregate_power_by_bin` is its exact power row. Every entry, including omitted interior bins, must be a sum of two integer squares; DC and Nyquist must additionally be perfect squares whose nonnegative square roots are divisible by the frozen ten-stage coefficient scale `32768^10`. This endpoint scale requirement applies to every single-event channel, regardless of source length or channel count, not only the three-frame mono case in section 8.1. Zero is allowed. The compact verifier applies these bounded necessary checks to each nonzero entry: remove all powers of two and require the remaining odd part to be 1 modulo 4; require an even exponent of each prime in the fixed set `{3, 7, 11, 19, 23, 31}`. These checks reject impossible powers such as 3, 6, 12, and 21 without attempting unbounded factorization of large FFT integers. Passing them is not a complete two-square factorization proof or proof of a realizable FFT row. The single-row restriction does not apply to aggregates over multiple events, which sum more than two squares. In particular, a multi-event endpoint aggregate need not itself be a perfect square. Full sidecar verification checks the actual integer coefficients.
+
+For each channel and bin `k`, let `A[k]` be the aggregate power, `S[k]` the sum of powers reported for that bin in `top_components`, `C[k]` the number of long events selecting it, and `E` the total number of long events. Per-event selected bins must be unique. Count every selection, including a zero-power component. Compact verification requires:
+
+```text
+S[k] <= A[k]
+C[k] == E implies S[k] == A[k]
+```
+
+When every event selects the bin, no omitted row can contribute additional power to that bin. Only bins omitted from at least one event may have an aggregate greater than the selected subtotal. Recomputed region, centroid and percept totals do not waive this exact equality. These are consistency constraints on supplied observations, not reconstruction of all omitted coefficients.
 
 The complete complex and power matrices are committed separately with:
 
@@ -438,7 +447,8 @@ It requires:
 - valid bounded decimal strings;
 - valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
 - three-frame mono weighted-energy and endpoint-power feasibility under section 8.1, without bypassing mono sources because Gram records are absent;
-- the bounded single-event aggregate two-square checks and exact endpoint squares in section 5, including bins omitted from the compact components;
+- the bounded single-event aggregate two-square checks and exact endpoint squares with square roots divisible by `32768^10` in section 5, including bins omitted from the compact components;
+- exact aggregate equality for every bin selected in all long events, counting zero-power selections, and the selected-subtotal lower bound for other bins;
 - valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
 - valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including joint two- and three-frame Gram/long-energy compatibility;
 - the final domain-separated percept digest.
@@ -464,6 +474,8 @@ The sidecar contains:
 
 Every record is encoded as exact UTF-8 bytes terminated by one LF byte (`0x0A`). CRLF (`0x0D 0x0A`) and other translated line endings are non-canonical. Verification of file-backed text streams must inspect the underlying bytes before any `TextIOWrapper` newline translation can convert CRLF into LF.
 
+Seekable verifier inputs, including `StringIO`, must begin at logical position zero. A nonzero logical position must be rejected before consuming records, without rewinding the input: verifying a suffix after a skipped prefix does not verify the complete stream. A binary-backed text wrapper already at logical zero is synchronized to that position before exact byte reads, rather than starting from its possibly advanced read-ahead buffer position. Explicit record iterables are verified as the complete supplied sequence; acceptance makes no claim about content discarded before creating that sequence.
+
 Every coefficient entry is:
 
 ```json
@@ -475,6 +487,7 @@ where all three are canonical bounded decimal strings and `power = real^2 + imag
 Acceptance requires all of the following identity-bearing evidence relationships:
 
 - canonical UTF-8/LF line encoding and exact canonical header bytes;
+- logical position zero at entry for seekable inputs, with no skipped stream prefix;
 - exact deterministic row order and plain non-Boolean integer channel/frame/sample position fields;
 - coefficient decimal syntax, bounds, and exact power arithmetic;
 - records receipt and trailer receipt;

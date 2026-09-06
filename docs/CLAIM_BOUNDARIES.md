@@ -81,7 +81,9 @@ Section 4.1 defines the full transform schedule: ten-bit input reversal, ten rad
 
 Independent producers must use those exact committed integers and that algorithm. No unstated floating-point rounding, truncation, tie-breaking, library trigonometry, or runtime table generation rule is part of the canonical v0.2 identity.
 
-For a single long event, every aggregate bin equals one integer complex power, including bins omitted from the compact components. The compact verifier requires each nonzero power's odd part to be 1 modulo 4 and its valuations at primes `{3, 7, 11, 19, 23, 31}` to be even; endpoint powers additionally require exact squares. These bounded necessary checks reject impossible values without unbounded factorization. Passing is not a complete two-square existence proof or proof that the entire FFT row arises from the declared samples. The single-row condition is not imposed on sums across multiple events. Full sidecar verification checks actual coefficients and reconstructed PCM.
+For a single long event, every aggregate bin equals one integer complex power, including bins omitted from the compact components. The compact verifier requires each nonzero power's odd part to be 1 modulo 4 and its valuations at primes `{3, 7, 11, 19, 23, 31}` to be even; endpoint powers additionally require exact squares whose square roots are divisible by `32768^10`. This scale requirement applies to every single-event channel, not only three-frame mono sources, and permits zero. These bounded necessary checks reject impossible values without unbounded factorization. Passing is not a complete two-square existence proof or proof that the entire FFT row arises from the declared samples. The single-row condition is not imposed on sums across multiple events. Full sidecar verification checks actual coefficients and reconstructed PCM.
+
+For every channel, a bin selected in every long event has a fully known aggregate: it must equal the sum of those reported powers. Zero-power selections count toward completeness. Bins omitted from at least one event may have additional unreported power, but their aggregate must still be at least the selected subtotal. This exact completeness check is not reconstruction of the remaining omitted spectrum.
 
 ## Transient boundary
 
@@ -124,6 +126,8 @@ The optional `qsol-map-spectral-sidecar-v0.2` is complete spectral evidence for 
 Its verifier checks deterministic ordering, typed integer position fields, coefficient arithmetic, receipt identity and reconstruction of the compact packet's matrix commitments. It additionally inverts both profiles to exact PCM16, checks overlap/tail/window constraints, requires both profiles to reconstruct the same waveform, binds reconstructed interleaved PCM to `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations against recovered samples.
 
 Canonical sidecar records are exact UTF-8 bytes terminated by one LF byte. CRLF is invalid canonical NDJSON even if a normal `TextIOWrapper(newline=None)` would translate it to `\n`; file-backed verification therefore inspects the underlying bytes before newline translation.
+
+Seekable verifier inputs, including `StringIO`, must begin at logical position zero. A nonzero position is rejected without consuming or rewinding the input, so a valid suffix after a skipped junk prefix is not accepted as a whole file. Explicit record iterables remain scoped to the complete sequence supplied by the caller; acceptance makes no claim about content discarded before creating that sequence.
 
 A decode failure is invalid evidence even if it occurs after an otherwise valid trailer. Verification uses bounded reads and bounded temporary spools.
 

@@ -27,11 +27,14 @@
 - [x] Bind compact long-frame and transient energies to source-sized PCM16/window maxima, require short-source integer realizability, and require channel Gram feasibility including rank no greater than frame count.
 - [x] Require exact one/two-sample long-window energy feasibility for mono and multichannel sources and tails, and for previous/current short-tail energies in transient candidates.
 - [x] Check omitted single-event aggregate powers using bounded necessary two-square conditions, while preserving the distinction from multi-event sums and full coefficient verification.
+- [x] Require exact aggregate equality for bins selected in every long event, including zero-power selections, while allowing unreported contributions for partially selected bins.
+- [x] Enforce the `32768^10` coefficient scale on both selected and omitted DC/Nyquist endpoint powers for every single-event channel; do not impose a single-square requirement on multi-event sums.
 - [x] Require one joint PCM16 assignment for three-frame multichannel Gram data and exact long-window energies, not just realizable diagonals or separate pairwise witnesses.
 - [x] Validate three-frame mono weighted energy against signed PCM16 triples and exact DC/Nyquist powers with at most eight endpoint-derived candidates, without a coordinate search.
 - [x] Account for omitted transient candidates and transition multiplicity in compact summary verification.
 - [x] Reconstruct short and long sidecar profiles back to one PCM16 waveform and bind it to the PCM digest, frozen v0.1 identity, transient observations and channel relationships.
 - [x] Verify canonical UTF-8/LF sidecar bytes before text newline translation and require empty writer destinations.
+- [x] Reject seekable verifier inputs not positioned at logical zero, without consuming or rewinding them; explicit record iterables remain scoped to the complete supplied sequence.
 - [x] Require the sidecar writer to validate immutable PCM16 sample layout and recompute the interleaved PCM digest before rebuilding the exact v0.2 envelope or touching output.
 - [x] Complete legal partial sidecar writes and reject non-progress, invalid counts or destination failures without returning a successful receipt.
 - [x] Reject output aliases by filesystem identity, including case-equivalent and Unicode-normalization-equivalent names on filesystems that alias those spellings.

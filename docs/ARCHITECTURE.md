@@ -265,6 +265,8 @@ It is canonical NDJSON containing:
 
 Each record is exact UTF-8 terminated by one LF byte. CRLF is non-canonical even when a text wrapper would otherwise translate it to `\n`; file-backed verification inspects the underlying bytes before newline translation.
 
+Seekable verifier inputs, including `StringIO`, must be at logical position zero. A nonzero position is rejected without consuming or rewinding the input. An already-zero binary-backed text wrapper is synchronized before exact byte reads, so read-ahead does not determine the start of verification. Explicit record iterables are checked as the complete supplied sequence, with no claim about bytes discarded before that sequence was supplied.
+
 Each coefficient entry is `["real","imag","power"]`, with canonical bounded decimal strings and exact `power = real^2 + imag^2` verification.
 
 The sidecar verifier checks:
@@ -303,7 +305,9 @@ Boolean values are not accepted where schema fields require integers, even thoug
 
 Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions. The one/two-sample energy checks and joint three-frame Gram/window-energy check do not claim a complete compact-only integer feasibility proof for arbitrary longer windows or full spectral commitments; full sidecar verification reconstructs the actual PCM evidence.
 
-For a single long event, aggregate entries are exact single-row powers. A bounded two-square filter checks all bins, including omitted interior bins: each nonzero power has odd part 1 modulo 4 and even valuations of the fixed primes `{3, 7, 11, 19, 23, 31}`. DC and Nyquist additionally require exact squares. This rejects necessary-condition violations without unbounded factorization of large powers. It is not a complete two-square existence proof, and is not applied to multi-event sums. The full sidecar checks actual coefficient arithmetic separately.
+For a single long event, aggregate entries are exact single-row powers. A bounded two-square filter checks all bins, including omitted interior bins: each nonzero power has odd part 1 modulo 4 and even valuations of the fixed primes `{3, 7, 11, 19, 23, 31}`. DC and Nyquist additionally require exact squares whose square roots are divisible by the frozen ten-stage coefficient scale `32768^10`. This applies to all single-event channels, not only three-frame mono input, and permits zero. It rejects necessary-condition violations without unbounded factorization of large powers. It is not a complete two-square existence proof, and is not applied to multi-event sums. The full sidecar checks actual coefficient arithmetic separately.
+
+For each bin, the compact validator accumulates selected power and a count of events selecting the bin. Per-event bin uniqueness is validated first, and zero-power selections count. The selected subtotal must not exceed the aggregate; when every event selects the bin, equality is required because no unreported row contribution remains. Partially selected bins retain the one-sided bound. These checks do not claim to reconstruct all omitted coefficients.
 
 Canonical byte comparison is used where exact typed structure matters.
 

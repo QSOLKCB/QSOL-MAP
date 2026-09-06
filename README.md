@@ -197,6 +197,8 @@ The verifier checks:
 - channel relationships rebuilt from reconstructed PCM;
 - missing, extra, malformed, or decode-failed records.
 
+Seekable verifier inputs, including `StringIO`, must start at logical position zero. A nonzero position is rejected without consuming or rewinding the stream, so callers cannot hide a junk prefix by seeking past it. Explicit record iterables are checked as the complete supplied sequence; verification makes no claim about data discarded before that sequence was supplied.
+
 The public writer validates the supplied `PCM16Wave` immutable tuple-of-tuples layout, declared channel/frame counts, metadata and plain signed PCM16 samples. Before rebuilding analysis or touching output, it recomputes the actual interleaved signed little-endian PCM SHA-256 in bounded chunks and requires equality with `pcm_s16le_sha256`. Directly constructed or stale wave objects cannot receive a receipt merely because rebuilding their envelope copies the same incorrect hash.
 
 The writer then independently rebuilds the deterministic v0.2 percept and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest. It also requires an empty, seekable destination positioned at zero so it cannot append a valid receipt to stale content. The original RIFF container bytes are not retained by `PCM16Wave`, so this writer-side check does not recompute the separate `source_sha256` commitment.
@@ -259,7 +261,9 @@ v0.2 bounds untrusted decimal-string length before converting it to Python integ
 
 The verification path also rejects Boolean values where canonical schemas require integers. Ordinary Python equality treats `False == 0` and `True == 1`; QSOL-MAP does not allow that language behavior to blur protocol types.
 
-For a channel with one long event, every aggregate power is a single integer complex power, even when its bin is omitted from the selected components. The compact verifier rejects impossible two-square residues and odd valuations of the fixed small primes listed in specification section 5; endpoint powers must additionally be perfect squares. These are bounded necessary checks, not a complete large-integer factorization proof. They do not impose the single-row restriction on aggregates summed over multiple events.
+For a channel with one long event, every aggregate power is a single integer complex power, even when its bin is omitted from the selected components. The compact verifier rejects impossible two-square residues and odd valuations of the fixed small primes listed in specification section 5; endpoint powers must additionally be perfect squares whose square roots are divisible by `32768^10`. This endpoint rule applies to every single-event channel, regardless of source length or channel count, and permits zero. These are bounded necessary checks, not a complete large-integer factorization proof. They do not impose the single-row restriction on aggregates summed over multiple events.
+
+For every channel, a bin selected in all long events must have aggregate power exactly equal to its summed selected powers, including zero-power selections. Only bins omitted from at least one event may have aggregate power greater than that reported subtotal. Recomputing the region, centroid and percept totals does not waive this equality.
 
 Source-sized PCM/window energy bounds, exact short-source integer feasibility, transform-power bounds, transient-summary constraints, and exact channel Gram-rank feasibility reject contradictory compact observations even when outer hashes are recomputed. These necessary checks are not a complete compact-only integer feasibility proof for arbitrary source lengths; full sidecar verification separately reconstructs and binds the actual PCM evidence.
 

@@ -64,7 +64,9 @@ One- and two-sample long windows, including mono sources and source tails, requi
 
 A three-frame mono source must admit a signed PCM16 triple with energy `x^2 + 4*y^2 + 9*z^2` and the same DC/Nyquist aggregate powers. The endpoint magnitudes must be exact multiples of `32768^10`; after removing that scale, exact square/divisibility checks recover at most eight candidate triples. This check applies to the complete three-frame mono source, not three-sample tails of longer recordings, and does not certify the remaining spectrum or source commitments. See specification section 8.1.
 
-When there is exactly one long event, all aggregate bin powers, including omitted interior bins, receive bounded necessary two-square checks: nonzero odd part 1 modulo 4 and even valuations of primes `{3, 7, 11, 19, 23, 31}`. Endpoint powers must additionally be perfect squares. These checks are not a complete large-integer factorization proof and must not be applied to aggregates summed across multiple events. See specification section 5.
+When there is exactly one long event, all aggregate bin powers, including omitted interior bins, receive bounded necessary two-square checks: nonzero odd part 1 modulo 4 and even valuations of primes `{3, 7, 11, 19, 23, 31}`. Endpoint powers must additionally be perfect squares with square roots divisible by `32768^10`, for every single-event channel regardless of source length or channel count; zero is allowed. These checks are not a complete large-integer factorization proof and must not be applied to aggregates summed across multiple events. See specification section 5.
+
+For each channel and bin, sum the reported component powers and count the long events selecting that bin, including zero-power selections. The subtotal cannot exceed the aggregate. If the selection count equals the number of long events, the subtotal must equal the aggregate exactly; only partially selected bins can have unreported contributions.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
@@ -83,6 +85,8 @@ source bytes
 ```
 
 Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. File-backed verification must inspect exact UTF-8/LF bytes before text newline translation; CRLF is not canonical.
+
+Seekable verifier inputs, including `StringIO`, must start at logical position zero. Reject nonzero positions without consuming or rewinding the stream; synchronize an already-zero text wrapper before exact binary reads. Explicit record iterables are verified as the complete supplied sequence, not as evidence about any data discarded before that sequence.
 
 The public sidecar writer first validates the `PCM16Wave` immutable tuple-of-tuples layout, metadata, sample counts and plain PCM16 integers, and hashes the actual samples in frame-major/channel-order signed little-endian form. The recomputed digest must equal `pcm_s16le_sha256` before rebuilding analysis or touching the destination. It then requires an envelope exactly matching the rebuilt deterministic v0.2 analysis and a provably empty seekable destination positioned at zero. The original RIFF bytes are not retained by this object, so this check does not recompute `source_sha256`.
 
