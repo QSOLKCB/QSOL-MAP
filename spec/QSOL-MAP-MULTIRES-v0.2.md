@@ -84,6 +84,12 @@ For each channel and long frame, v0.2 records:
 - the eight highest-power components, ranked by descending power then ascending bin;
 - real, imaginary and power values for each retained component.
 
+For a long frame with `a` source samples available before zero padding, exact PCM16 input requires:
+
+```text
+windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
+```
+
 The complete complex and power matrices are committed separately with:
 
 ```text
@@ -146,6 +152,8 @@ Each reported candidate records:
 - exact positive delta;
 - `rise_ratio`.
 
+Each previous/current candidate energy must fit the exact PCM16 maximum implied by the corresponding frozen 256-sample triangular window and source-tail availability. The summary `positive_delta_sum` and `maximum_positive_delta` are likewise bounded by the source-sized short-frame maxima. When the source produces fewer than two short frames, no transition exists and both summary totals are exactly `"0"`.
+
 For non-zero previous energy:
 
 ```json
@@ -178,6 +186,8 @@ For every ordered pair `i < j`, the compact packet records exact full-source int
 - exact rational zero-lag correlation squared when both channel energies are non-zero.
 
 When either channel has zero total energy, `zero_lag_correlation_squared` is `null`.
+
+The complete channel Gram matrix must be positive semidefinite and its exact rank must not exceed the source `frame_count`, because the declared channel vectors live in that sample-dimensional space.
 
 These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
 
@@ -228,9 +238,9 @@ It requires:
 - exact typed integer fields rather than Python Boolean/int equality aliases;
 - canonical matrix/source SHA-256 digests;
 - valid bounded decimal strings;
-- valid long-event structure;
-- valid transient rule structure and arithmetic;
-- valid channel-pair structure and correlation arithmetic;
+- valid long-event structure and PCM16/window energy bounds;
+- valid transient rule structure, arithmetic, source-sized energy bounds, and zero totals when no transition exists;
+- valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, and Gram rank not exceeding `frame_count`;
 - the final domain-separated percept digest.
 
 Untrusted decimal strings are bounded to at most 1024 digits before `int()` conversion. This is both a format bound and a fail-closed guard against Python's configurable integer-string digit limit.
@@ -260,19 +270,24 @@ Every coefficient entry is:
 
 where all three are canonical bounded decimal strings and `power = real^2 + imag^2`.
 
-The verifier checks:
+Acceptance requires all of the following identity-bearing evidence relationships:
 
-- canonical line encoding;
-- exact canonical header bytes;
-- exact deterministic row order;
-- plain non-Boolean integer channel/frame/sample position fields;
-- coefficient decimal syntax and bounds;
-- coefficient power arithmetic;
+- canonical line encoding and exact canonical header bytes;
+- exact deterministic row order and plain non-Boolean integer channel/frame/sample position fields;
+- coefficient decimal syntax, bounds, and exact power arithmetic;
 - records receipt and trailer receipt;
-- reconstructed short/long matrix commitments against the compact percept;
-- no missing or extra records.
+- reconstructed short and long complex/power matrix commitments against the compact percept;
+- exact inverse reconstruction of PCM16 samples from both spectral profiles, including overlap consistency, window divisibility, PCM16 range, and zero-padded tails;
+- identical reconstructed PCM waveform from the short and long profiles;
+- SHA-256 of the reconstructed interleaved PCM payload equal to `source.pcm_s16le_sha256`;
+- reconstruction of the frozen v0.1 percept identity from the short-profile evidence equal to `short_reference.percept_sha256`;
+- transient observations reconstructed from the short-profile rows equal to the compact transient observations;
+- channel relationships recomputed from reconstructed PCM equal to the compact channel relationships;
+- no missing or extra records, including decode failures after an otherwise valid trailer.
 
-The writer/verifier process one spectral row at a time rather than constructing full matrices in memory.
+The public sidecar writer accepts an envelope only when rebuilding v0.2 analysis from the supplied WAV produces that exact canonical envelope, so it cannot emit a receipt for evidence that contradicts declared matrix or observation commitments.
+
+The verifier uses bounded row reads and bounded temporary spools rather than constructing complete spectral matrices or unbounded in-memory waveforms.
 
 ## 12. CLI
 
@@ -283,7 +298,7 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
-The compact percept output and sidecar output must identify different filesystem paths. A collision is rejected before either output is written.
+The compact percept output and sidecar output must identify different filesystem destinations. Existing aliases are detected by filesystem identity, and initially nonexistent names that differ only by case are treated as a collision when the target directory's filesystem is case-insensitive. A collision is rejected before either output is written.
 
 The original v0.1 commands remain available:
 
