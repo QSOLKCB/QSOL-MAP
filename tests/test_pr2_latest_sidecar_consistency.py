@@ -172,15 +172,20 @@ class LatestSidecarConsistencyTests(unittest.TestCase):
 
         changed = copy.deepcopy(envelope)
         relation = changed["percept"]["channel_relationships"][0]
+        left_energy = int(relation["left_sum_squares"])
+        right_energy = int(relation["right_sum_squares"])
+        self.assertGreater(left_energy, 0)
+        self.assertEqual(left_energy, right_energy)
         relation.update(
             {
                 "dot_product": "0",
                 "dot_product_sign": 0,
-                "left_sum_squares": "0",
-                "right_sum_squares": "0",
-                "difference_sum_squares": "0",
-                "sum_sum_squares": "0",
-                "zero_lag_correlation_squared": None,
+                "difference_sum_squares": str(left_energy + right_energy),
+                "sum_sum_squares": str(left_energy + right_energy),
+                "zero_lag_correlation_squared": {
+                    "numerator": "0",
+                    "denominator": str(left_energy * right_energy),
+                },
             }
         )
         rehash(changed)
