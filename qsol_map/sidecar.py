@@ -16,6 +16,9 @@ from .multiresolution import (
     V01_PROFILE_ID,
     _fixed_fft_long,
     _hex_digest,
+    _plain_int,
+    _signed_decimal,
+    _unsigned_decimal,
     _windowed_long_frame,
     verify_multiresolution_envelope,
 )
@@ -189,7 +192,12 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
             {"id": LONG_PROFILE_ID, "frame_size_samples": LONG_FRAME_SIZE, "hop_size_samples": LONG_HOP_SIZE, "bin_count": LONG_FRAME_SIZE // 2 + 1},
         ],
     }
-    if header != expected_header:
+    if header is None:
+        return False
+    try:
+        if canonical_bytes(header) != canonical_bytes(expected_header):
+            return False
+    except (TypeError, ValueError, UnicodeError):
         return False
     header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
 
@@ -213,8 +221,11 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
             return False
         if record["record_type"] != "spectral_frame" or record["profile_id"] != profile_id:
             return False
+        if not _plain_int(record["channel_index"]) or not _plain_int(record["frame_index"]) or not _plain_int(record["sample_start"]):
+            return False
         if record["channel_index"] != channel_index or record["frame_index"] != frame_index or record["sample_start"] != sample_start:
             return False
+
         coefficients = record["coefficients"]
         expected_bins = FRAME_SIZE // 2 + 1 if profile_id == V01_PROFILE_ID else LONG_FRAME_SIZE // 2 + 1
         if not isinstance(coefficients, list) or len(coefficients) != expected_bins:
@@ -222,15 +233,15 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         complex_row = []
         power_row = []
         for item in coefficients:
-            if not isinstance(item, list) or len(item) != 3 or not all(isinstance(value, str) for value in item):
+            if not isinstance(item, list) or len(item) != 3:
+                return False
+            if not _signed_decimal(item[0]) or not _signed_decimal(item[1]) or not _unsigned_decimal(item[2]):
                 return False
             try:
                 real = int(item[0])
                 imag = int(item[1])
                 power = int(item[2])
-            except ValueError:
-                return False
-            if str(real) != item[0] or str(imag) != item[1] or str(power) != item[2] or power < 0:
+            except (TypeError, ValueError):
                 return False
             if real * real + imag * imag != power:
                 return False
@@ -253,7 +264,9 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
     trailer = _canonical_line(trailer_line)
     if trailer is None or set(trailer) != {"record_type", "header_sha256", "records_sha256", "record_count", "receipt_sha256"}:
         return False
-    if trailer["record_type"] != "trailer" or trailer["record_count"] != record_count:
+    if trailer["record_type"] != "trailer":
+        return False
+    if not _plain_int(trailer["record_count"]) or trailer["record_count"] != record_count:
         return False
     if not _hex_digest(trailer["header_sha256"]) or not _hex_digest(trailer["records_sha256"]) or not _hex_digest(trailer["receipt_sha256"]):
         return False
