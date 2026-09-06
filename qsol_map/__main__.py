@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 from .analysis import build_percept, verify_percept_envelope
 from .canonical import canonical_bytes
@@ -23,19 +24,60 @@ def _write_envelope(envelope: dict, output_path: Path | None) -> None:
         output_path.write_bytes(encoded)
 
 
+def _filesystem_case_insensitive(directory: Path) -> bool:
+    """Probe whether an existing output directory aliases case variants."""
+    probe_path: Path | None = None
+    try:
+        directory = directory.resolve(strict=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="QsolMapCaseProbeAa",
+            dir=directory,
+            delete=False,
+        ) as probe:
+            probe_path = Path(probe.name)
+        alternate = probe_path.with_name(probe_path.name.swapcase())
+        if alternate == probe_path or not alternate.exists():
+            return False
+        return probe_path.samefile(alternate)
+    except OSError:
+        return False
+    finally:
+        if probe_path is not None:
+            try:
+                probe_path.unlink()
+            except OSError:
+                pass
+
+
 def _same_path(left: Path, right: Path) -> bool:
-    """Return whether two paths designate the same filesystem object.
+    """Return whether two paths designate the same filesystem object or name.
 
     Existing paths are compared by filesystem identity first so distinct hard
-    links to one inode cannot bypass the collision guard. The resolved-string
-    comparison remains the fallback for paths that do not exist yet.
+    links to one inode cannot bypass the collision guard. For paths that do not
+    exist yet, exact resolved names are compared and case-equivalent basenames
+    are rejected when their shared parent filesystem is case-insensitive.
     """
     try:
         if left.exists() and right.exists() and left.samefile(right):
             return True
     except OSError:
         pass
-    return left.resolve(strict=False) == right.resolve(strict=False)
+
+    left_resolved = left.resolve(strict=False)
+    right_resolved = right.resolve(strict=False)
+    if left_resolved == right_resolved:
+        return True
+
+    if left_resolved.name.casefold() != right_resolved.name.casefold():
+        return False
+    try:
+        left_parent = left_resolved.parent.resolve(strict=True)
+        right_parent = right_resolved.parent.resolve(strict=True)
+        if not left_parent.samefile(right_parent):
+            return False
+    except OSError:
+        return False
+    return _filesystem_case_insensitive(left_parent)
 
 
 def _same_as_stream(path: Path, stream) -> bool:
