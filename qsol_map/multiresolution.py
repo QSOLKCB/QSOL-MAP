@@ -243,7 +243,7 @@ def _two_sample_vectors(energy: int) -> list[tuple[int, int]]:
 
 
 def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
-    """Require an exact PCM16 factorization for two-frame channel Gram data."""
+    """Require exact PCM16 vectors matching both Gram data and long energy."""
     if percept["source"]["frame_count"] != 2:
         return True
     channel_count = percept["source"]["channels"]
@@ -253,13 +253,29 @@ def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     if gram is None:
         return False
 
+    first_weight_square = LONG_WINDOW_WEIGHTS[0] * LONG_WINDOW_WEIGHTS[0]
+    second_weight_square = LONG_WINDOW_WEIGHTS[1] * LONG_WINDOW_WEIGHTS[1]
     by_energy: dict[int, list[tuple[int, int]]] = {}
     candidates: list[list[tuple[int, int]]] = []
     for channel_index in range(channel_count):
         energy = gram[channel_index][channel_index]
         if energy not in by_energy:
             by_energy[energy] = _two_sample_vectors(energy)
-        channel_candidates = by_energy[energy]
+        events = percept["channels"][channel_index]["long_spectral"]["events"]
+        if len(events) != 1:
+            return False
+        long_energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        if long_energy is None:
+            return False
+        channel_candidates = [
+            vector
+            for vector in by_energy[energy]
+            if (
+                vector[0] * vector[0] * first_weight_square
+                + vector[1] * vector[1] * second_weight_square
+            )
+            == long_energy
+        ]
         if not channel_candidates:
             return False
         candidates.append(channel_candidates)
@@ -429,6 +445,18 @@ def _validate_percept_core(percept: object) -> bool:
         ):
             return False
         if short_event_count == 2 and positive_delta_sum != maximum_positive_delta:
+            return False
+
+        reported_delta_sum = 0
+        for candidate in transient["strongest_candidates"]:
+            positive_delta = _core._safe_decimal_int(candidate["positive_delta"])
+            if positive_delta is None:
+                return False
+            reported_delta_sum += positive_delta
+        omitted_candidate_count = transient["candidate_count"] - len(
+            transient["strongest_candidates"]
+        )
+        if reported_delta_sum + omitted_candidate_count > positive_delta_sum:
             return False
 
         for candidate in transient["strongest_candidates"]:
