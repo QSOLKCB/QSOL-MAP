@@ -23,7 +23,14 @@ from .multiresolution import (
     verify_multiresolution_envelope,
 )
 from .tables import FRAME_SIZE, HOP_SIZE
-from .v02_tables import LONG_FRAME_SIZE, LONG_HOP_SIZE, LONG_TOP_K
+from .v02_tables import (
+    LONG_FRAME_SIZE,
+    LONG_HOP_SIZE,
+    LONG_TOP_K,
+    Q15_ONE,
+    TWIDDLE_COS_Q15_1024,
+    TWIDDLE_SIN_Q15_1024,
+)
 from .wav import PCM16Wave
 
 SIDECAR_SCHEMA = "qsol-map-spectral-sidecar-v0.2"
@@ -159,6 +166,91 @@ def _canonical_line(line: str) -> dict | None:
     return value
 
 
+def _bounded_lines(lines: Iterable[str]):
+    """Consume file-backed sidecars without materializing an oversized line."""
+    readline = getattr(lines, "readline", None)
+    if callable(readline):
+        while True:
+            line = readline(MAX_SIDECAR_LINE_CHARS + 1)
+            if line == "":
+                return
+            yield line
+            if len(line) > MAX_SIDECAR_LINE_CHARS or not line.endswith("\n"):
+                return
+    else:
+        yield from lines
+
+
+def _recover_windowed_energy(coefficients: list[tuple[int, int]]) -> int | None:
+    """Invert the frozen long FFT exactly enough to recover time-domain energy.
+
+    The writer emits only the non-negative half of a real-input spectrum. The
+    endpoint-imaginary checks plus conjugate reconstruction recover the full
+    final butterfly state. Each frozen butterfly is then inverted with exact
+    integer divisibility checks; valid authored rows recover the original
+    bit-reversed real windowed samples, whose sum of squares is permutation
+    invariant.
+    """
+    expected_bins = LONG_FRAME_SIZE // 2 + 1
+    if len(coefficients) != expected_bins:
+        return None
+    if coefficients[0][1] != 0 or coefficients[-1][1] != 0:
+        return None
+
+    state = [[real, imag] for real, imag in coefficients]
+    state.extend([[real, -imag] for real, imag in reversed(coefficients[1:-1])])
+
+    width = LONG_FRAME_SIZE
+    while width >= 2:
+        half = width // 2
+        twiddle_step = LONG_FRAME_SIZE // width
+        previous = [[0, 0] for _ in range(LONG_FRAME_SIZE)]
+        for base in range(0, LONG_FRAME_SIZE, width):
+            for offset in range(half):
+                ar, ai = state[base + offset]
+                br, bi = state[base + offset + half]
+
+                ur_num = ar + br
+                ui_num = ai + bi
+                u_den = 2 * Q15_ONE
+                if ur_num % u_den or ui_num % u_den:
+                    return None
+                ur = ur_num // u_den
+                ui = ui_num // u_den
+
+                dr = ar - br
+                di = ai - bi
+                if dr % 2 or di % 2:
+                    return None
+                tr = dr // 2
+                ti = di // 2
+
+                twiddle_index = offset * twiddle_step
+                wr = TWIDDLE_COS_Q15_1024[twiddle_index]
+                wi = TWIDDLE_SIN_Q15_1024[twiddle_index]
+                norm = wr * wr + wi * wi
+                if norm == 0:
+                    return None
+                vr_num = tr * wr + ti * wi
+                vi_num = ti * wr - tr * wi
+                if vr_num % norm or vi_num % norm:
+                    return None
+                vr = vr_num // norm
+                vi = vi_num // norm
+
+                previous[base + offset] = [ur, ui]
+                previous[base + offset + half] = [vr, vi]
+        state = previous
+        width //= 2
+
+    energy = 0
+    for real, imag in state:
+        if imag != 0:
+            return None
+        energy += real * real
+    return energy
+
+
 def _expected_sequence(envelope: dict):
     frame_count = envelope["percept"]["source"]["frame_count"]
     channel_count = envelope["percept"]["source"]["channels"]
@@ -176,7 +268,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
     """Verify sidecar framing, row arithmetic, hashes, ordering and compact commitments."""
     if not verify_multiresolution_envelope(envelope):
         return False
-    iterator = iter(lines)
+    iterator = iter(_bounded_lines(lines))
     try:
         first_line = next(iterator)
     except StopIteration:
@@ -238,6 +330,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
         complex_row = []
         power_row = []
         power_values = []
+        parsed_coefficients: list[tuple[int, int]] = []
         for bin_index, item in enumerate(coefficients):
             if not isinstance(item, list) or len(item) != 3:
                 return False
@@ -256,12 +349,16 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
             complex_row.append([item[0], item[1]])
             power_row.append(item[2])
             power_values.append(power)
+            parsed_coefficients.append((real, imag))
 
         if profile_id == V01_PROFILE_ID:
             _update_matrix_hash(short_complex[channel_index], complex_row)
             _update_matrix_hash(short_power[channel_index], power_row)
         else:
             event = long_channels[channel_index]["long_spectral"]["events"][frame_index]
+            recovered_energy = _recover_windowed_energy(parsed_coefficients)
+            if recovered_energy is None or event["windowed_energy"] != str(recovered_energy):
+                return False
             centroid_denominator = sum(power_values)
             centroid_numerator = sum(
                 bin_index * power for bin_index, power in enumerate(power_values)
