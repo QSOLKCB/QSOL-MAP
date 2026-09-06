@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 from . import multiresolution_core as _core
+from .tables import (
+    FRAME_SIZE as SHORT_FRAME_SIZE,
+    HOP_SIZE as SHORT_HOP_SIZE,
+    WINDOW_WEIGHTS as SHORT_WINDOW_WEIGHTS,
+)
 from .v02_tables import LONG_FRAME_SIZE, LONG_WINDOW_WEIGHTS
 
 
@@ -12,17 +19,85 @@ for _weight in LONG_WINDOW_WEIGHTS:
     _LONG_WINDOW_SQUARE_PREFIX.append(
         _LONG_WINDOW_SQUARE_PREFIX[-1] + _weight * _weight
     )
-_LONG_PCM16_SQUARE_MAX = (1 << 15) ** 2
+_SHORT_WINDOW_SQUARE_PREFIX = [0]
+for _weight in SHORT_WINDOW_WEIGHTS:
+    _SHORT_WINDOW_SQUARE_PREFIX.append(
+        _SHORT_WINDOW_SQUARE_PREFIX[-1] + _weight * _weight
+    )
+_PCM16_SQUARE_MAX = (1 << 15) ** 2
+
+
+def _matrix_rank(matrix: list[list[int]]) -> int:
+    """Return exact matrix rank using rational Gaussian elimination."""
+    if not matrix:
+        return 0
+    work = [[Fraction(value) for value in row] for row in matrix]
+    row_count = len(work)
+    column_count = len(work[0])
+    rank = 0
+    for column in range(column_count):
+        pivot = next(
+            (row for row in range(rank, row_count) if work[row][column] != 0),
+            None,
+        )
+        if pivot is None:
+            continue
+        work[rank], work[pivot] = work[pivot], work[rank]
+        pivot_value = work[rank][column]
+        for entry in range(column, column_count):
+            work[rank][entry] /= pivot_value
+        for row in range(row_count):
+            if row == rank or work[row][column] == 0:
+                continue
+            factor = work[row][column]
+            for entry in range(column, column_count):
+                work[row][entry] -= factor * work[rank][entry]
+        rank += 1
+        if rank == row_count:
+            break
+    return rank
+
+
+def _relationship_gram_rank(percept: dict) -> int | None:
+    channel_count = percept["source"]["channels"]
+    if channel_count <= 1:
+        return 0
+    gram = [[0] * channel_count for _ in range(channel_count)]
+    energies: dict[int, int] = {}
+    for relation in percept["channel_relationships"]:
+        left = relation["left_channel"]
+        right = relation["right_channel"]
+        dot = _core._safe_decimal_int(relation["dot_product"], signed=True)
+        left_energy = _core._safe_decimal_int(relation["left_sum_squares"])
+        right_energy = _core._safe_decimal_int(relation["right_sum_squares"])
+        if dot is None or left_energy is None or right_energy is None:
+            return None
+        energies[left] = left_energy
+        energies[right] = right_energy
+        gram[left][right] = dot
+        gram[right][left] = dot
+    if len(energies) != channel_count:
+        return None
+    for channel_index, energy in energies.items():
+        gram[channel_index][channel_index] = energy
+    return _matrix_rank(gram)
+
+
+def _short_frame_energy_bound(frame_count: int, frame_index: int) -> int:
+    sample_start = frame_index * SHORT_HOP_SIZE
+    available = min(SHORT_FRAME_SIZE, max(0, frame_count - sample_start))
+    return _PCM16_SQUARE_MAX * _SHORT_WINDOW_SQUARE_PREFIX[available]
 
 
 def _validate_percept_core(percept: object) -> bool:
-    """Run the frozen core validation plus source-sized PCM16 energy bounds."""
+    """Run core validation plus source-sized feasibility and energy bounds."""
     if not _original_validate_percept_core(percept):
         return False
 
     source = percept["source"]
     frame_count = source["frame_count"]
-    max_channel_energy = frame_count * _LONG_PCM16_SQUARE_MAX
+    channel_count = source["channels"]
+    max_channel_energy = frame_count * _PCM16_SQUARE_MAX
     for relation in percept["channel_relationships"]:
         left_energy = _core._safe_decimal_int(relation["left_sum_squares"])
         right_energy = _core._safe_decimal_int(relation["right_sum_squares"])
@@ -30,6 +105,10 @@ def _validate_percept_core(percept: object) -> bool:
             return False
         if left_energy > max_channel_energy or right_energy > max_channel_energy:
             return False
+
+    gram_rank = _relationship_gram_rank(percept)
+    if gram_rank is None or gram_rank > frame_count:
+        return False
 
     for channel in percept["channels"]:
         for event in channel["long_spectral"]["events"]:
@@ -39,9 +118,47 @@ def _validate_percept_core(percept: object) -> bool:
             if windowed_energy is None:
                 return False
             max_windowed_energy = (
-                _LONG_PCM16_SQUARE_MAX * _LONG_WINDOW_SQUARE_PREFIX[available]
+                _PCM16_SQUARE_MAX * _LONG_WINDOW_SQUARE_PREFIX[available]
             )
             if windowed_energy > max_windowed_energy:
+                return False
+
+    short_event_count = (frame_count + SHORT_HOP_SIZE - 1) // SHORT_HOP_SIZE
+    transition_bounds = [
+        _short_frame_energy_bound(frame_count, frame_index)
+        for frame_index in range(1, short_event_count)
+    ]
+    positive_delta_sum_bound = sum(transition_bounds)
+    maximum_positive_delta_bound = max(transition_bounds, default=0)
+
+    for channel in percept["channels"]:
+        transient = channel["transient"]
+        positive_delta_sum = _core._safe_decimal_int(transient["positive_delta_sum"])
+        maximum_positive_delta = _core._safe_decimal_int(
+            transient["maximum_positive_delta"]
+        )
+        if positive_delta_sum is None or maximum_positive_delta is None:
+            return False
+        if positive_delta_sum > positive_delta_sum_bound:
+            return False
+        if maximum_positive_delta > maximum_positive_delta_bound:
+            return False
+        if short_event_count < 2 and (
+            positive_delta_sum != 0 or maximum_positive_delta != 0
+        ):
+            return False
+
+        for candidate in transient["strongest_candidates"]:
+            frame_index = candidate["frame_index"]
+            previous_energy = _core._safe_decimal_int(candidate["previous_energy"])
+            current_energy = _core._safe_decimal_int(candidate["current_energy"])
+            if previous_energy is None or current_energy is None:
+                return False
+            if previous_energy > _short_frame_energy_bound(
+                frame_count, frame_index - 1
+            ):
+                return False
+            if current_energy > _short_frame_energy_bound(frame_count, frame_index):
                 return False
     return True
 
