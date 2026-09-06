@@ -16,16 +16,19 @@
 ## v0.2.0 - Multi-resolution deterministic observation
 
 - [x] Add a second long-window spectral profile without changing v0.1.
+- [x] Publish the exact identity-bearing 1024-point Q15 twiddle contract, including the full normative quarter-wave table and deterministic reconstruction rule.
 - [x] Define optional full spectral sidecar artifacts so compact packets can commit to richer evidence.
 - [x] Add transient/onset observations with an exact reference contract.
 - [x] Add channel relationship and spatial-signal observations without implicit downmixing.
 - [x] Add explicit analysis for high sample-rate inputs so captured represented ultrasonic bands remain available rather than being discarded for psychoacoustic reasons.
 - [x] Add an environment-scoped benchmark harness guided by QSOLKCB/OPT without turning performance into a portable claim.
 - [x] Harden verification against oversized decimal strings, Boolean/int ambiguity, output collisions, sidecar tampering and zero-denominator onset ratios.
-- [x] Bind compact long-frame and transient energies to source-sized PCM16/window maxima and require channel Gram feasibility including rank no greater than frame count.
+- [x] Bind compact long-frame and transient energies to source-sized PCM16/window maxima, require short-source integer realizability, and require channel Gram feasibility including rank no greater than frame count.
+- [x] Account for omitted transient candidates and transition multiplicity in compact summary verification.
 - [x] Reconstruct short and long sidecar profiles back to one PCM16 waveform and bind it to the PCM digest, frozen v0.1 identity, transient observations and channel relationships.
+- [x] Verify canonical UTF-8/LF sidecar bytes before text newline translation and require empty writer destinations.
 - [x] Require the sidecar writer to emit evidence only for the exact deterministic v0.2 envelope rebuilt from the supplied WAV.
-- [x] Reject output aliases by filesystem identity, including case-equivalent names on case-insensitive filesystems.
+- [x] Reject output aliases by filesystem identity, including case-equivalent and Unicode-normalization-equivalent names on filesystems that alias those spellings.
 - [x] Freeze a v0.2 golden percept vector while preserving the published v0.1 golden vector.
 
 ### v0.2.0 implementation notes
@@ -44,7 +47,7 @@ The optional full-evidence sidecar schema is:
 qsol-map-spectral-sidecar-v0.2
 ```
 
-Sidecar conformance includes exact reconstruction of both spectral profiles to one PCM16 waveform, verification of the reconstructed interleaved PCM SHA-256, rebuild of the frozen v0.1 percept identity, and reconstruction of transient/channel observations.
+Sidecar conformance includes exact UTF-8/LF record bytes, exact reconstruction of both spectral profiles to one PCM16 waveform, verification of the reconstructed interleaved PCM SHA-256, rebuild of the frozen v0.1 percept identity, and reconstruction of transient/channel observations.
 
 v0.2 remains Layer 1 deterministic acoustic observation. It does not introduce learned tokenization or semantic interpretation.
 
