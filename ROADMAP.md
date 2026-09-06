@@ -22,6 +22,10 @@
 - [x] Add explicit analysis for high sample-rate inputs so captured represented ultrasonic bands remain available rather than being discarded for psychoacoustic reasons.
 - [x] Add an environment-scoped benchmark harness guided by QSOLKCB/OPT without turning performance into a portable claim.
 - [x] Harden verification against oversized decimal strings, Boolean/int ambiguity, output collisions, sidecar tampering and zero-denominator onset ratios.
+- [x] Bind compact long-frame and transient energies to source-sized PCM16/window maxima and require channel Gram feasibility including rank no greater than frame count.
+- [x] Reconstruct short and long sidecar profiles back to one PCM16 waveform and bind it to the PCM digest, frozen v0.1 identity, transient observations and channel relationships.
+- [x] Require the sidecar writer to emit evidence only for the exact deterministic v0.2 envelope rebuilt from the supplied WAV.
+- [x] Reject output aliases by filesystem identity, including case-equivalent names on case-insensitive filesystems.
 - [x] Freeze a v0.2 golden percept vector while preserving the published v0.1 golden vector.
 
 ### v0.2.0 implementation notes
@@ -39,6 +43,8 @@ The optional full-evidence sidecar schema is:
 ```text
 qsol-map-spectral-sidecar-v0.2
 ```
+
+Sidecar conformance includes exact reconstruction of both spectral profiles to one PCM16 waveform, verification of the reconstructed interleaved PCM SHA-256, rebuild of the frozen v0.1 percept identity, and reconstruction of transient/channel observations.
 
 v0.2 remains Layer 1 deterministic acoustic observation. It does not introduce learned tokenization or semantic interpretation.
 
