@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -78,6 +79,34 @@ class CliTests(unittest.TestCase):
                 2,
             )
             self.assertFalse(collision.exists())
+
+    def test_v02_rejects_hardlinked_output_collision_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            source = directory / "input.wav"
+            output = directory / "percept-v02.json"
+            sidecar = directory / "spectral-v02.ndjson"
+            source.write_bytes(make_wav([1, -1, 2, -2] * 100))
+            output.write_text("sentinel", encoding="utf-8")
+            try:
+                os.link(output, sidecar)
+            except OSError as exc:
+                self.skipTest(f"hard links unavailable: {exc}")
+            self.assertTrue(output.samefile(sidecar))
+
+            self.assertEqual(
+                main([
+                    "analyze-v0.2",
+                    str(source),
+                    "-o",
+                    str(output),
+                    "--sidecar",
+                    str(sidecar),
+                ]),
+                2,
+            )
+            self.assertEqual(output.read_text(encoding="utf-8"), "sentinel")
+            self.assertEqual(sidecar.read_text(encoding="utf-8"), "sentinel")
 
 
 if __name__ == "__main__":
