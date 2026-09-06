@@ -11,7 +11,14 @@ from .tables import (
     HOP_SIZE as SHORT_HOP_SIZE,
     WINDOW_WEIGHTS as SHORT_WINDOW_WEIGHTS,
 )
-from .v02_tables import LONG_FRAME_SIZE, LONG_TOP_K, LONG_WINDOW_WEIGHTS
+from .v02_tables import (
+    LONG_FRAME_SIZE,
+    LONG_TOP_K,
+    LONG_WINDOW_WEIGHTS,
+    Q15_ONE,
+    TWIDDLE_COS_Q15_1024,
+    TWIDDLE_SIN_Q15_1024,
+)
 
 
 _ORIGINAL_VALIDATOR_ATTR = "_qsol_map_v02_original_validate_percept_core"
@@ -29,6 +36,16 @@ for _weight in SHORT_WINDOW_WEIGHTS:
         _SHORT_WINDOW_SQUARE_PREFIX[-1] + _weight * _weight
     )
 _PCM16_SQUARE_MAX = (1 << 15) ** 2
+_LONG_WINDOW_WEIGHT_SQUARE_MAX = max(weight * weight for weight in LONG_WINDOW_WEIGHTS)
+_LONG_FFT_STAGE_COUNT = LONG_FRAME_SIZE.bit_length() - 1
+_LONG_FFT_TWIDDLE_NORM_MAX = max(
+    real * real + imag * imag
+    for real, imag in zip(TWIDDLE_COS_Q15_1024, TWIDDLE_SIN_Q15_1024)
+)
+_LONG_FFT_STAGE_NORM_BOUND = max(Q15_ONE * Q15_ONE, _LONG_FFT_TWIDDLE_NORM_MAX)
+_LONG_FFT_POWER_GAIN_BOUND = (
+    2 * _LONG_FFT_STAGE_NORM_BOUND
+) ** _LONG_FFT_STAGE_COUNT
 
 
 def _matrix_rank(matrix: list[list[int]]) -> int:
@@ -272,6 +289,32 @@ def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     return search(0)
 
 
+def _sum_of_three_squares_possible(energy: int) -> bool:
+    """Apply Legendre's exact three-square obstruction to a channel energy."""
+    if energy < 0:
+        return False
+    reduced = energy
+    while reduced and reduced % 4 == 0:
+        reduced //= 4
+    return reduced % 8 != 7
+
+
+def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
+    """Reject three-frame Gram diagonals that no integer PCM vector can realize."""
+    if percept["source"]["frame_count"] != 3:
+        return True
+    channel_count = percept["source"]["channels"]
+    if channel_count <= 1:
+        return True
+    gram = _relationship_gram_matrix(percept)
+    if gram is None:
+        return False
+    return all(
+        _sum_of_three_squares_possible(gram[index][index])
+        for index in range(channel_count)
+    )
+
+
 def _validate_percept_core(percept: object) -> bool:
     """Run core validation plus source-sized feasibility and energy bounds."""
     if not _original_validate_percept_core(percept):
@@ -279,6 +322,7 @@ def _validate_percept_core(percept: object) -> bool:
 
     source = percept["source"]
     frame_count = source["frame_count"]
+    channel_count = source["channels"]
     max_channel_energy = frame_count * _PCM16_SQUARE_MAX
     for relation in percept["channel_relationships"]:
         left_energy = _core._safe_decimal_int(relation["left_sum_squares"])
@@ -295,8 +339,16 @@ def _validate_percept_core(percept: object) -> bool:
         return False
     if not _two_sample_relationships_are_integer_realizable(percept):
         return False
+    if not _three_sample_relationships_are_integer_realizable(percept):
+        return False
 
-    for channel in percept["channels"]:
+    relationship_energies = None
+    if channel_count > 1:
+        relationship_energies = _relationship_channel_energies(percept)
+        if relationship_energies is None:
+            return False
+
+    for channel_index, channel in enumerate(percept["channels"]):
         if not _one_long_event_matches_aggregate(channel):
             return False
         for event in channel["long_spectral"]["events"]:
@@ -310,18 +362,42 @@ def _validate_percept_core(percept: object) -> bool:
             )
             if windowed_energy > max_windowed_energy:
                 return False
+            if relationship_energies is not None:
+                source_energy = relationship_energies[channel_index]
+                if windowed_energy > source_energy * _LONG_WINDOW_WEIGHT_SQUARE_MAX:
+                    return False
 
             centroid = event["spectral_centroid_bin"]
             numerator = _core._safe_decimal_int(centroid["numerator"])
-            if numerator is None:
+            denominator = _core._safe_decimal_int(centroid["denominator"])
+            if numerator is None or denominator is None:
                 return False
+            if denominator > windowed_energy * _LONG_FFT_POWER_GAIN_BOUND:
+                return False
+
             selected_weighted_power = 0
+            selected_power_total = 0
+            component_powers: list[int] = []
             for component in event["top_components"]:
                 power = _core._safe_decimal_int(component["power"])
                 if power is None:
                     return False
+                component_powers.append(power)
+                selected_power_total += power
                 selected_weighted_power += component["bin"] * power
             if numerator < selected_weighted_power:
+                return False
+
+            # The compact list claims to contain the strongest LONG_TOP_K bins.
+            # Therefore every omitted bin is bounded by the weakest selected
+            # power. This supplies a necessary total-power capacity bound even
+            # when multiple events prevent reconstructing an individual row
+            # from aggregate powers alone.
+            omitted_count = LONG_FRAME_SIZE // 2 + 1 - len(component_powers)
+            weakest_selected_power = component_powers[-1]
+            if denominator > (
+                selected_power_total + omitted_count * weakest_selected_power
+            ):
                 return False
 
     short_event_count = (frame_count + SHORT_HOP_SIZE - 1) // SHORT_HOP_SIZE
@@ -343,6 +419,8 @@ def _validate_percept_core(percept: object) -> bool:
         if positive_delta_sum > positive_delta_sum_bound:
             return False
         if maximum_positive_delta > maximum_positive_delta_bound:
+            return False
+        if positive_delta_sum > max(0, short_event_count - 1) * maximum_positive_delta:
             return False
         if maximum_positive_delta == 0 and positive_delta_sum != 0:
             return False
