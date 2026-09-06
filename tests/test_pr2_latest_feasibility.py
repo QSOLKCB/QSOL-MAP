@@ -2,10 +2,12 @@ import copy
 import io
 import struct
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 import qsol_map.__main__ as cli_module
+import qsol_map.sidecar as sidecar_module
 from qsol_map.canonical import canonical_bytes, domain_sha256
 from qsol_map.multiresolution import (
     PERCEPT_DOMAIN,
@@ -183,6 +185,146 @@ class LatestFeasibilityTests(unittest.TestCase):
         transient["maximum_positive_delta"] = "1"
         rehash(changed)
         self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_single_event_endpoint_aggregate_power_must_be_square(self):
+        wave = parse_pcm16_wav(make_wav([100] * 200, sample_rate=1000))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        spectral = changed["percept"]["channels"][0]["long_spectral"]
+        self.assertEqual(len(spectral["events"]), 1)
+        event = spectral["events"][0]
+        endpoint = len(spectral["aggregate_power_by_bin"]) - 1
+        reported_bins = {component["bin"] for component in event["top_components"]}
+        self.assertNotIn(endpoint, reported_bins)
+
+        old_power = int(spectral["aggregate_power_by_bin"][endpoint])
+        new_power = old_power + 1
+        while int(new_power**0.5) ** 2 == new_power:
+            new_power += 1
+        weakest_reported = min(int(component["power"]) for component in event["top_components"])
+        self.assertLess(new_power, weakest_reported)
+        delta = new_power - old_power
+        spectral["aggregate_power_by_bin"][endpoint] = str(new_power)
+        regions = spectral["aggregate_power_by_frequency_region"]
+        regions["below_20khz_reference"] = str(
+            int(regions["below_20khz_reference"]) + delta
+        )
+        centroid = event["spectral_centroid_bin"]
+        centroid["denominator"] = str(int(centroid["denominator"]) + delta)
+        centroid["numerator"] = str(
+            int(centroid["numerator"]) + endpoint * delta
+        )
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_each_event_centroid_covers_reported_component_weight(self):
+        samples = [((index * 7919) % 30001) - 15000 for index in range(1600)]
+        wave = parse_pcm16_wav(make_wav(samples))
+        changed = copy.deepcopy(build_multiresolution_percept(wave))
+        events = changed["percept"]["channels"][0]["long_spectral"]["events"]
+        self.assertGreaterEqual(len(events), 2)
+
+        chosen = None
+        for source_index, source_event in enumerate(events):
+            selected_weight = sum(
+                component["bin"] * int(component["power"])
+                for component in source_event["top_components"]
+            )
+            if selected_weight <= 0:
+                continue
+            source_numerator = int(source_event["spectral_centroid_bin"]["numerator"])
+            shift = source_numerator - selected_weight + 1
+            if shift <= 0:
+                continue
+            for target_index, target_event in enumerate(events):
+                if target_index == source_index:
+                    continue
+                target_centroid = target_event["spectral_centroid_bin"]
+                target_numerator = int(target_centroid["numerator"])
+                target_denominator = int(target_centroid["denominator"])
+                capacity = 512 * target_denominator - target_numerator
+                if capacity >= shift:
+                    chosen = (source_event, target_event, selected_weight, shift)
+                    break
+            if chosen is not None:
+                break
+        self.assertIsNotNone(chosen)
+        source_event, target_event, selected_weight, shift = chosen
+        source_centroid = source_event["spectral_centroid_bin"]
+        target_centroid = target_event["spectral_centroid_bin"]
+        source_centroid["numerator"] = str(selected_weight - 1)
+        target_centroid["numerator"] = str(int(target_centroid["numerator"]) + shift)
+        rehash(changed)
+        self.assertFalse(verify_multiresolution_envelope(changed))
+
+    def test_concurrent_sidecar_line_limit_overrides_are_serialized(self):
+        wave = parse_pcm16_wav(make_wav([3, -2, 1, -4] * 200))
+        envelope = build_multiresolution_percept(wave)
+        sidecar_stream = io.StringIO()
+        sidecar_module.write_spectral_sidecar(wave, envelope, sidecar_stream)
+        sidecar_text = sidecar_stream.getvalue()
+        self.assertGreater(max(map(len, sidecar_text.splitlines(True))), 1000)
+
+        class BlockingReader:
+            def __init__(self, text, entered, release):
+                self._stream = io.StringIO(text)
+                self._entered = entered
+                self._release = release
+                self._first = True
+
+            def readline(self, size=-1):
+                if self._first:
+                    self._first = False
+                    self._entered.set()
+                    if not self._release.wait(5):
+                        raise RuntimeError("timed out waiting to release blocked sidecar read")
+                return self._stream.readline(size)
+
+        old_limit = sidecar_module.MAX_SIDECAR_LINE_CHARS
+        entered_a = threading.Event()
+        entered_b = threading.Event()
+        release_a = threading.Event()
+        release_b = threading.Event()
+        results = {}
+        threads = []
+
+        def run(name, reader):
+            results[name] = sidecar_module.verify_spectral_sidecar(envelope, reader)
+
+        try:
+            sidecar_module.MAX_SIDECAR_LINE_CHARS = 1000
+            thread_a = threading.Thread(
+                target=run,
+                args=("a", BlockingReader(sidecar_text, entered_a, release_a)),
+                daemon=True,
+            )
+            thread_b = threading.Thread(
+                target=run,
+                args=("b", BlockingReader(sidecar_text, entered_b, release_b)),
+                daemon=True,
+            )
+            threads = [thread_a, thread_b]
+            thread_a.start()
+            self.assertTrue(entered_a.wait(2))
+            thread_b.start()
+
+            # The second verifier must not reach its first read while the first
+            # call still owns the temporary module-global override.
+            self.assertFalse(entered_b.wait(0.5))
+            release_a.set()
+            thread_a.join(5)
+            self.assertFalse(thread_a.is_alive())
+            self.assertTrue(entered_b.wait(2))
+            release_b.set()
+            thread_b.join(5)
+            self.assertFalse(thread_b.is_alive())
+            self.assertFalse(results["a"])
+            self.assertFalse(results["b"])
+        finally:
+            release_a.set()
+            release_b.set()
+            for thread in threads:
+                thread.join(1)
+            sidecar_module.MAX_SIDECAR_LINE_CHARS = old_limit
 
 
 if __name__ == "__main__":
