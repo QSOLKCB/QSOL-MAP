@@ -68,8 +68,10 @@ v0.2 imports the frozen v0.1 evidence and adds:
 - deterministic short-frame energy-rise transient candidates;
 - exact pairwise channel relationships without downmixing;
 - optional full short+long canonical NDJSON spectral sidecars;
-- strict sidecar ordering, arithmetic, matrix-commitment, and receipt verification;
+- strict sidecar ordering, arithmetic, matrix-commitment, receipt, and reconstructed-evidence verification;
 - a frozen v0.2 golden percept vector.
+
+The compact verifier bounds long/transient energies by the exact source-sized PCM16/window maxima and requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count.
 
 The v0.2 packet remains Layer 1. It does not introduce neural tokens or semantic music interpretation.
 
@@ -127,6 +129,8 @@ energy-rise-3-over-2-v0.2
 
 For a transition from zero previous energy, `rise_ratio` is `null`. A finite rational numerator/denominator is emitted only when the previous energy is non-zero.
 
+Candidate energies and summary totals are source-sized against the frozen short triangular window. If the source produces fewer than two short frames, no transition exists and both summary totals are zero.
+
 This is an authored deterministic signal event, not a claim of equivalence to human onset perception.
 
 ## Channel relationships
@@ -140,6 +144,8 @@ For every channel pair `i < j`, v0.2 records exact quantities including:
 - `left - right` energy;
 - `left + right` energy;
 - exact zero-lag correlation squared when both channel energies are non-zero.
+
+The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count.
 
 These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
 
@@ -170,16 +176,24 @@ with exact decimal strings and verified `power = real^2 + imag^2`.
 
 The verifier checks:
 
-- canonical line encoding;
+- canonical line encoding and bounded reads;
 - exact typed header data;
 - plain non-Boolean integer position fields;
 - deterministic row order;
 - coefficient arithmetic;
 - record and receipt hashes;
 - reconstructed v0.1 and v0.2 matrix commitments;
-- missing or extra records.
+- exact PCM16 reconstruction from both spectral profiles, including overlap/tail/window-divisibility checks;
+- equality of the short- and long-profile reconstructed waveforms;
+- reconstructed interleaved PCM SHA-256 against `pcm_s16le_sha256`;
+- frozen v0.1 percept identity rebuilt from short-profile evidence;
+- transient observations rebuilt from short spectral rows;
+- channel relationships rebuilt from reconstructed PCM;
+- missing, extra, malformed, or decode-failed records.
 
-The writer and verifier process one spectral row at a time rather than building complete sidecar matrices in memory.
+The public writer independently rebuilds the deterministic v0.2 percept from the supplied WAV and refuses to write if the supplied envelope differs, including altered matrix commitments with a recomputed outer percept digest.
+
+The verifier uses bounded temporary spools for reconstruction rather than building complete spectral matrices or an unbounded waveform in memory.
 
 ## Quick start
 
@@ -201,7 +215,7 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
-The CLI rejects using the same filesystem path for the compact percept and the sidecar, preventing one output from truncating the other.
+The CLI rejects compact-percept/sidecar output aliases before writing. Existing aliases are checked by filesystem identity, and initially nonexistent names that differ only by case are rejected when their shared target filesystem is case-insensitive.
 
 ## Strict input boundary
 
@@ -235,6 +249,8 @@ v0.2 bounds untrusted decimal-string length before converting it to Python integ
 
 The verification path also rejects Boolean values where canonical schemas require integers. Ordinary Python equality treats `False == 0` and `True == 1`; QSOL-MAP does not allow that language behavior to blur protocol types.
 
+Source-sized PCM/window energy bounds and exact channel Gram-rank feasibility reject compact observations that cannot arise from the declared number of PCM16 samples even when outer hashes are recomputed.
+
 ## Golden vectors
 
 The test suite protects both protocol generations:
@@ -265,13 +281,14 @@ Coverage includes:
 - repeated byte-identical v0.2 analysis;
 - v0.2 golden identity;
 - high-sample-rate represented-bin retention;
-- silence-to-signal transient handling;
-- exact channel relationships;
+- silence-to-signal transient handling and source-sized transient bounds;
+- exact and jointly feasible channel relationships;
 - malformed/oversized verifier input;
-- sidecar round-trip and tamper rejection;
+- sidecar round-trip and reconstructed-evidence tamper rejection;
 - Boolean sidecar position rejection even after receipt recomputation;
+- sidecar writer rejection of envelopes that contradict the supplied WAV;
 - CLI v0.2 and sidecar round-trips;
-- output-path collision rejection;
+- filesystem output-alias rejection;
 - direct checkout execution of the benchmark harness.
 
 ## Benchmarking and optimization
