@@ -9,17 +9,32 @@ import sys
 
 from .analysis import build_percept, verify_percept_envelope
 from .canonical import canonical_bytes
+from .multiresolution import build_multiresolution_percept, verify_multiresolution_envelope
+from .sidecar import verify_spectral_sidecar, write_spectral_sidecar
 from .wav import parse_pcm16_wav
 
 
-def _analyze(input_path: Path, output_path: Path | None) -> int:
-    wave = parse_pcm16_wav(input_path.read_bytes())
-    envelope = build_percept(wave)
+def _write_envelope(envelope: dict, output_path: Path | None) -> None:
     encoded = canonical_bytes(envelope)
     if output_path is None:
         sys.stdout.buffer.write(encoded + b"\n")
     else:
         output_path.write_bytes(encoded)
+
+
+def _analyze(input_path: Path, output_path: Path | None) -> int:
+    wave = parse_pcm16_wav(input_path.read_bytes())
+    _write_envelope(build_percept(wave), output_path)
+    return 0
+
+
+def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path | None) -> int:
+    wave = parse_pcm16_wav(input_path.read_bytes())
+    envelope = build_multiresolution_percept(wave)
+    _write_envelope(envelope, output_path)
+    if sidecar_path is not None:
+        with sidecar_path.open("w", encoding="utf-8", newline="") as stream:
+            write_spectral_sidecar(wave, envelope, stream)
     return 0
 
 
@@ -32,6 +47,26 @@ def _verify(input_path: Path) -> int:
     return 0
 
 
+def _verify_v02(input_path: Path) -> int:
+    envelope = json.loads(input_path.read_text(encoding="utf-8"))
+    if not verify_multiresolution_envelope(envelope):
+        print("invalid QSOL-MAP v0.2 percept envelope", file=sys.stderr)
+        return 1
+    print(envelope["percept_sha256"])
+    return 0
+
+
+def _verify_sidecar(percept_path: Path, sidecar_path: Path) -> int:
+    envelope = json.loads(percept_path.read_text(encoding="utf-8"))
+    with sidecar_path.open("r", encoding="utf-8", newline="") as stream:
+        valid = verify_spectral_sidecar(envelope, stream)
+    if not valid:
+        print("invalid QSOL-MAP v0.2 spectral sidecar", file=sys.stderr)
+        return 1
+    print(envelope["percept_sha256"])
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m qsol_map",
@@ -39,12 +74,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    analyze = subparsers.add_parser("analyze", help="analyze a strict PCM16 RIFF/WAVE file")
+    analyze = subparsers.add_parser("analyze", help="analyze with frozen v0.1 profile")
     analyze.add_argument("input", type=Path)
     analyze.add_argument("-o", "--output", type=Path)
 
-    verify = subparsers.add_parser("verify", help="verify a percept envelope hash")
+    verify = subparsers.add_parser("verify", help="verify a frozen v0.1 percept envelope")
     verify.add_argument("input", type=Path)
+
+    analyze_v02 = subparsers.add_parser(
+        "analyze-v0.2",
+        help="analyze with v0.2 multi-resolution deterministic observation",
+    )
+    analyze_v02.add_argument("input", type=Path)
+    analyze_v02.add_argument("-o", "--output", type=Path)
+    analyze_v02.add_argument(
+        "--sidecar",
+        type=Path,
+        help="optionally stream the full short+long complex spectral evidence as canonical NDJSON",
+    )
+
+    verify_v02 = subparsers.add_parser("verify-v0.2", help="verify a v0.2 percept envelope")
+    verify_v02.add_argument("input", type=Path)
+
+    verify_sidecar = subparsers.add_parser(
+        "verify-sidecar-v0.2",
+        help="verify a v0.2 spectral sidecar against its compact percept",
+    )
+    verify_sidecar.add_argument("percept", type=Path)
+    verify_sidecar.add_argument("sidecar", type=Path)
 
     args = parser.parse_args(argv)
     try:
@@ -52,6 +109,12 @@ def main(argv: list[str] | None = None) -> int:
             return _analyze(args.input, args.output)
         if args.command == "verify":
             return _verify(args.input)
+        if args.command == "analyze-v0.2":
+            return _analyze_v02(args.input, args.output, args.sidecar)
+        if args.command == "verify-v0.2":
+            return _verify_v02(args.input)
+        if args.command == "verify-sidecar-v0.2":
+            return _verify_sidecar(args.percept, args.sidecar)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
