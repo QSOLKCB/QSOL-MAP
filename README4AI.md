@@ -18,28 +18,59 @@ L0 != L1 != L2 != L3 != L4
 
 Do not describe L2 or L3 output as direct physical measurement. Do not describe L1 as subjective hearing.
 
-## Current implementation
+## Implemented canonical profiles
 
-`qsol-map-fixed-fft-v0.1` is the only implemented canonical analysis profile.
+Two L1 profiles are implemented.
 
-Input:
+### Frozen v0.1 short reference
+
+`qsol-map-fixed-fft-v0.1`
+
 - strict RIFF/WAVE PCM format 1;
 - PCM16 little endian;
 - 1 to 8 channels;
-- no implicit resampling or downmix.
+- 256-sample frame, 128-sample hop;
+- exact integer triangular window;
+- frozen Q15 twiddles;
+- exact unbounded-integer Python FFT;
+- independent source, PCM, complex-matrix, power-matrix and percept commitments.
 
-Identity path:
+The v0.1 profile is frozen and must remain byte-identical to its published golden vector.
+
+### v0.2 multi-resolution reference
+
+`qsol-map-multiresolution-v0.2`
+
+The v0.2 profile imports the frozen v0.1 result and adds:
+
+- a deterministic 1024-sample / 512-hop long spectral reference;
+- independent long complex/power matrix commitments;
+- explicit represented-frequency support and 20 kHz / 40 kHz reference regions;
+- no psychoacoustic low-pass filtering;
+- deterministic short-frame energy-rise transient candidates;
+- exact pairwise channel relationships without downmixing;
+- optional canonical NDJSON full-spectral sidecars;
+- strict sidecar ordering, arithmetic, matrix and receipt verification.
+
+For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero.
+
+Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
+
+## Identity path
+
 ```text
 source bytes
 -> source_sha256
 -> PCM data bytes
 -> pcm_s16le_sha256
--> exact per-channel fixed-integer analysis
--> percept core
+-> frozen v0.1 short analysis
+-> v0.1 percept + matrix commitments
+-> v0.2 long analysis + transient/channel observations
+-> v0.2 percept core
 -> domain-separated percept_sha256
 ```
 
-The FFT reference uses an exact integer triangular-window rule and frozen Q15 twiddle tables with exact unbounded integer arithmetic. Runtime trigonometric floating point is forbidden from the profile.
+Optional full spectral evidence is a separately verified sidecar receiver. It does not replace the compact percept identity.
 
 ## Source lineage
 
@@ -52,29 +83,56 @@ Important sources:
 - QSOLKCB/OPT
 - SoundStream, arXiv:2107.03312
 
-No code from SoundStream is vendored.
+No SoundStream code or model weights are vendored.
 
 ## Development rules
 
-1. Preserve the layer boundary.
-2. Fail closed on unsupported canonical inputs.
-3. Never insert floats into identity-bearing JSON.
-4. Large exact integers must be decimal strings.
-5. Preserve source and PCM hashes independently.
-6. Learned models must be versioned and hash-bound when L2 is added.
-7. Keep a deterministic reference path before optimizing.
-8. Consult QSOLKCB/OPT before changing test, DSP, parallel, or Lean CI performance.
-9. Do not weaken tests or claim portable speedups without target-repo measurements.
-10. Run the complete suite after every behavior change.
+1. Preserve the L0-L4 layer boundary.
+2. Preserve frozen `qsol-map-fixed-fft-v0.1` behavior and golden vectors.
+3. Fail closed on unsupported canonical inputs and malformed verification data.
+4. Never insert floats into identity-bearing JSON.
+5. Large exact integers must be canonical decimal strings; untrusted decimal fields must be bounded before `int()` conversion.
+6. Preserve source, PCM, short-matrix, long-matrix, sidecar and percept commitments independently.
+7. Never downmix channels implicitly.
+8. High sample rate permits analysis of represented bins above conventional human-audible ranges; it does not prove sensor response or physical ultrasonic validity.
+9. Learned models must be versioned and hash-bound when L2 is added.
+10. Keep a deterministic reference path before optimizing.
+11. Consult QSOLKCB/OPT before changing test, DSP, parallel, or Lean CI performance.
+12. Do not weaken tests or claim portable speedups without target-repo measurements.
+13. Run the complete suite after every behavior change.
 
 ## Commands
 
+Frozen v0.1:
+
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m qsol_map analyze input.wav -o percept.json
-python3 -m qsol_map verify percept.json
+python3 -m qsol_map analyze input.wav -o percept-v01.json
+python3 -m qsol_map verify percept-v01.json
 ```
 
-## Near-term work
+v0.2:
 
-See `ROADMAP.md`. The next major additions are multi-resolution deterministic spectral evidence and an L2 learned-token receiver that is explicitly derivative of, and separately committed from, L1.
+```bash
+python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json
+python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json --sidecar spectral-v02.ndjson
+python3 -m qsol_map verify-v0.2 percept-v02.json
+python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
+```
+
+Benchmark from a checkout:
+
+```bash
+python3 scripts/benchmark_v02.py
+```
+
+The benchmark is environment-scoped evidence only, not a portable speed claim or CI performance gate.
+
+Tests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## Next major phase
+
+See `ROADMAP.md`. The next major protocol addition is v0.3 L2 learned-token reception: exact model/weights/codebook/preprocessing identities, separately committed token streams, and comparisons against independently preserved L1 evidence.
