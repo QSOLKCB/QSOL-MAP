@@ -154,7 +154,7 @@ def _canonical_line(line: str) -> dict | None:
             return None
         if canonical_bytes(value).decode("utf-8") != raw:
             return None
-    except (json.JSONDecodeError, TypeError, ValueError, UnicodeError):
+    except (json.JSONDecodeError, TypeError, ValueError, UnicodeError, RecursionError):
         return None
     return value
 
@@ -197,7 +197,7 @@ def verify_spectral_sidecar(envelope: dict, lines: Iterable[str]) -> bool:
     try:
         if canonical_bytes(header) != canonical_bytes(expected_header):
             return False
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, RecursionError):
         return False
     header_sha256 = domain_sha256(SIDECAR_HEADER_DOMAIN, canonical_bytes(header))
 
