@@ -58,9 +58,11 @@ The v0.2 profile imports the frozen v0.1 result and adds:
 
 For a transition from zero previous energy, the transient candidate's `rise_ratio` is `null`; finite rational ratios are emitted only when the denominator is non-zero. Candidate energies and summary totals are bounded by the source-sized frozen short-window PCM16 maxima. If fewer than two short frames exist, both transient summary totals are zero. When more than 16 candidates exist, omitted candidates still contribute at least one positive integer unit each to `positive_delta_sum`.
 
-The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, applies short-source integer realizability checks, and for two-frame multichannel sources requires feasible PCM vectors to reproduce the exact declared long-window energy.
+The compact verifier also requires the complete channel Gram matrix to be positive semidefinite with rank no greater than the source frame count, applies short-source integer realizability checks, and for two- and three-frame multichannel sources requires one joint PCM16 vector assignment to reproduce every Gram entry and each declared long-window energy. For three frames, source energy is `x^2 + y^2 + z^2` and windowed energy is `x^2 + 4*y^2 + 9*z^2`; separate pairwise witnesses are insufficient.
 
 One- and two-sample long windows, including mono sources and source tails, require exact energies `x^2` and `x^2 + 4*y^2` respectively for PCM16 integers. The same rule applies independently to previous/current short frames reported by transient candidates. Bounds for longer windows are not a complete proof of integer realizability; full sidecar verification reconstructs actual PCM evidence.
+
+When there is exactly one long event, all aggregate bin powers, including omitted interior bins, receive bounded necessary two-square checks: nonzero odd part 1 modulo 4 and even valuations of primes `{3, 7, 11, 19, 23, 31}`. Endpoint powers must additionally be perfect squares. These checks are not a complete large-integer factorization proof and must not be applied to aggregates summed across multiple events. See specification section 5.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
@@ -81,6 +83,8 @@ source bytes
 Optional full spectral evidence is a separately verified sidecar receiver. Sidecar verification reconstructs both spectral profiles back to one PCM16 waveform, checks that waveform against `pcm_s16le_sha256`, rebuilds the frozen v0.1 percept identity, and cross-checks transient/channel observations. File-backed verification must inspect exact UTF-8/LF bytes before text newline translation; CRLF is not canonical.
 
 The public sidecar writer first validates the `PCM16Wave` immutable tuple-of-tuples layout, metadata, sample counts and plain PCM16 integers, and hashes the actual samples in frame-major/channel-order signed little-endian form. The recomputed digest must equal `pcm_s16le_sha256` before rebuilding analysis or touching the destination. It then requires an envelope exactly matching the rebuilt deterministic v0.2 analysis and a provably empty seekable destination positioned at zero. The original RIFF bytes are not retained by this object, so this check does not recompute `source_sha256`.
+
+The writer completes every record and LF terminator by looping over legal partial writes. Non-progress, invalid write counts and destination errors must prevent a successful receipt. Partial output may remain after failure; no transactional rollback or durable-storage guarantee is claimed. The text adapter returns completed character counts while binary-backed writes preserve exact UTF-8 bytes.
 
 ## Source lineage
 

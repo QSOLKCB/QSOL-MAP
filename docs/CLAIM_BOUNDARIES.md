@@ -29,14 +29,16 @@ For an accepted source and `qsol-map-multiresolution-v0.2`, the reference implem
 7. a transition from zero previous energy is represented with `rise_ratio: null`, never a zero-denominator rational value;
 8. transient energies and summary totals are bounded by source-sized PCM16/frozen-window maxima, obey transition-multiplicity bounds, and include a minimum positive contribution from candidates omitted beyond the 16 reported strongest events;
 9. exact pairwise channel signal relationships are recorded without downmixing, the complete Gram matrix is jointly feasible with rank no greater than the source frame count, and short sources receive additional integer-realizability checks;
-10. for a two-frame multichannel source, accepted compact observations admit one joint PCM16 vector assignment that matches all declared Gram products and the exact committed long-window weighted energy; mono two-frame sources and one/two-sample long or reported short tails also require exact weighted-energy realizability;
+10. for two- and three-frame multichannel sources, accepted compact observations admit one joint PCM16 vector assignment that matches all declared Gram products and the exact committed long-window weighted energy; mono two-frame sources and one/two-sample long or reported short tails also require exact weighted-energy realizability;
 11. an optional canonical NDJSON sidecar can carry every short and long complex spectral row while remaining separately verified against compact matrix commitments;
 12. accepted sidecars reconstruct exact PCM16 from both profiles, require one shared waveform, bind that waveform to `pcm_s16le_sha256`, rebuild the frozen v0.1 percept identity, and reconstruct transient/channel observations;
 13. sidecar ordering, exact UTF-8/LF line bytes, coefficient arithmetic, receipt hashes and exact typed position fields are checked fail-closed before text newline translation can hide non-canonical CRLF bytes;
 14. the sidecar writer validates immutable PCM16 sample layout and the recomputed interleaved sample digest before rebuilding the exact v0.2 envelope or touching its provably empty, seekable destination at position zero;
 15. malformed oversized decimal strings are rejected before untrusted integer conversion can escape the verifier contract;
 16. output collisions are rejected before writing, including filesystem aliases created by case folding or Unicode normalization equivalence on target filesystems that treat such spellings as identical;
-17. the v0.2 golden vector protects the current multi-resolution reference behavior.
+17. the v0.2 golden vector protects the current multi-resolution reference behavior;
+18. single-event aggregate powers, including omitted interior bins, satisfy the bounded necessary two-square checks in specification section 5, without claiming complete large-integer factorization;
+19. the writer completes legal partial writes and cannot return a successful receipt after invalid write progress or a destination exception.
 
 ## What QSOL-MAP v0.2.0 does not claim
 
@@ -79,6 +81,8 @@ Section 4.1 defines the full transform schedule: ten-bit input reversal, ten rad
 
 Independent producers must use those exact committed integers and that algorithm. No unstated floating-point rounding, truncation, tie-breaking, library trigonometry, or runtime table generation rule is part of the canonical v0.2 identity.
 
+For a single long event, every aggregate bin equals one integer complex power, including bins omitted from the compact components. The compact verifier requires each nonzero power's odd part to be 1 modulo 4 and its valuations at primes `{3, 7, 11, 19, 23, 31}` to be even; endpoint powers additionally require exact squares. These bounded necessary checks reject impossible values without unbounded factorization. Passing is not a complete two-square existence proof or proof that the entire FFT row arises from the declared samples. The single-row condition is not imposed on sums across multiple events. Full sidecar verification checks actual coefficients and reconstructed PCM.
+
 ## Transient boundary
 
 The v0.2 transient candidate rule is deterministic and exact:
@@ -101,9 +105,11 @@ Each reported previous/current short frame with one available sample requires en
 
 Channels are never implicitly mixed in the canonical v0.1 or v0.2 paths.
 
-Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. The complete Gram matrix must be positive semidefinite and have rank at most `frame_count`, so accepted relationships can arise from vectors in the declared sample space.
+Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. The complete Gram matrix must be positive semidefinite and have rank at most `frame_count`, so accepted relationships can arise from real vectors in the declared sample space; that alone does not establish PCM16 integer realizability.
 
 Short sources receive additional integer-realizability constraints. In particular, a two-frame multichannel compact percept must admit one joint set of PCM16 integer vectors satisfying the complete Gram data, and those same feasible vectors must reproduce each channel's declared long-window energy under the committed first two long-window weights. A two-frame mono source must still admit PCM16 integers realizing that weighted energy, despite having no channel-pair records. All one/two-sample long tails receive the same exact energy checks. A merely bounded but unattainable energy is invalid.
+
+For three-frame multichannel sources, the verifier requires one common assignment of signed PCM16 triples satisfying every channel dot product and both source energy `E = x^2 + y^2 + z^2` and long energy `W = x^2 + 4*y^2 + 9*z^2`. The search derives candidates from `W-E = 3*y^2 + 8*z^2`, preserving the asymmetric signed range at -32768. It rejects jointly impossible triples even when each pair has a separate witness. This is exact feasibility for these Gram and weighted-energy quantities, not verification of the full matrix commitments.
 
 These compact checks are necessary constraints, not a complete proof that every arbitrary-length compact observation has an integer waveform realization. Full sidecar verification separately reconstructs and binds actual PCM samples.
 
@@ -120,6 +126,8 @@ Canonical sidecar records are exact UTF-8 bytes terminated by one LF byte. CRLF 
 A decode failure is invalid evidence even if it occurs after an otherwise valid trailer. Verification uses bounded reads and bounded temporary spools.
 
 The public writer independently validates `PCM16Wave` metadata, immutable tuple-of-tuples dimensions and plain signed PCM16 values, then recomputes `pcm_s16le_sha256` from frame-major/channel-order signed little-endian sample bytes in bounded chunks. A stale or directly constructed inconsistent wave is rejected before rebuilding analysis or touching the destination. It then rebuilds deterministic v0.2 analysis and refuses to emit a sidecar when the supplied envelope differs, including a rebound matrix commitment with a recomputed outer digest. It also refuses append-positioned or stale-tail destinations by requiring a provably empty seekable stream positioned at zero.
+
+The writer must complete legal partial writes of every payload and LF before returning its receipt. Zero, `None`, negative, Boolean, non-integer or oversized write counts fail with `OSError`; destination exceptions propagate. Failed output can remain partial, but no successful receipt is returned. This does not guarantee transactional rollback, a final filesystem flush, or durable storage.
 
 The original RIFF bytes are not retained by `PCM16Wave`. Recomputing its sample digest therefore does not recompute the separate `source_sha256` container hash or establish source authenticity.
 
@@ -147,15 +155,16 @@ Important rules include:
 - identity-bearing decimal strings are canonical and length-bounded before integer conversion;
 - exact typed structures use canonical-byte comparison where ordinary Python equality would blur `False` with `0` or `True` with `1`;
 - long and short-frame authored energies are bounded by the source/PCM/window contract and additional exact short-source feasibility constraints, including one/two-sample mono windows and tails;
-- long spectral power and top-component claims must fit finite transform/ranking bounds;
+- long spectral power and top-component claims must fit finite transform/ranking bounds, with bounded necessary two-square checks for single-event aggregates;
 - transient summaries must account for transition multiplicity and omitted candidates;
-- channel relationships must be jointly feasible in the declared sample dimension;
+- channel relationships must be jointly feasible in the declared sample dimension, including one shared PCM16 assignment for three-frame Gram and weighted-energy data;
 - invalid structural data is rejected even when an attacker recomputes outer hashes;
 - writer-side sample commitments are recomputed rather than trusted from the input object;
+- partial writes are completed or fail without a successful receipt;
 - file-backed sidecar verification preserves exact line bytes rather than accepting CRLF hidden by newline translation;
 - output destinations are checked by filesystem identity, including case-equivalent and Unicode-normalization-equivalent initially nonexistent names on target filesystems that alias those spellings.
 
-These checks establish protocol validity, not trust in the origin of the data.
+These checks establish protocol validity within the stated verification boundary, not trust in the origin of the data or complete arbitrary-length integer feasibility from a compact packet alone.
 
 ## Learned-model boundary
 

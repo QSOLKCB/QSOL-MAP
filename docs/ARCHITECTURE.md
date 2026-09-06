@@ -240,6 +240,8 @@ The complete channel Gram matrix must be positive semidefinite and its exact ran
 
 Short sources have additional integer-realizability checks. For two-frame multichannel sources, one joint feasible PCM16 vector assignment must satisfy all Gram products and reproduce each channel's exact long-window weighted energy under the committed weights. Two-frame mono sources have no Gram records but must still admit PCM16 samples with that weighted energy. Exact one/two-sample long-tail checks apply independently of total source length and channel count.
 
+Three-frame multichannel sources likewise require one common assignment of PCM16 triples satisfying every Gram entry and each long energy. With source energy `E` and long energy `W`, the exact equations are `E = x^2 + y^2 + z^2` and `W = x^2 + 4*y^2 + 9*z^2`. The helper uses `W-E = 3*y^2 + 8*z^2` to enumerate at most 32769 third-coordinate magnitudes, derives the other squares and valid signed samples, then checks joint compatibility across all channels. Diagonal three-square checks and separate pairwise witnesses alone cannot establish this joint assignment. See specification section 8.
+
 These are signal relationships. They do not infer speaker geometry, source direction, or perceived stereo width.
 
 ## 10. Compact packet and complete sidecar evidence
@@ -283,6 +285,8 @@ Before rebuilding analysis or touching output, the public sidecar writer validat
 
 The writer then rebuilds the deterministic v0.2 percept from those validated samples and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments. It also requires an empty seekable destination at position zero, preventing appended or stale-tail sidecars from receiving a successful receipt. Since `PCM16Wave` does not retain original RIFF bytes, this check does not recompute the separate `source_sha256` container commitment.
 
+The exact output adapter loops until each record and LF terminator has been accepted. Binary writes use views of the remaining UTF-8 payload; text writes return character counts. Legal short writes are completed, invalid or stalled progress raises `OSError`, and destination exceptions propagate without a successful receipt. Partial output can remain on failure; no rollback or durable-storage guarantee is implied.
+
 The verifier uses bounded temporary spools for reconstructed PCM instead of materializing complete spectral matrices or an unbounded waveform in memory.
 
 The sidecar is a receiver of committed L1 evidence. It does not replace the compact percept identity.
@@ -295,7 +299,9 @@ Identity-bearing decimal strings are bounded before conversion to Python integer
 
 Boolean values are not accepted where schema fields require integers, even though Python considers `False == 0` and `True == 1` in ordinary equality.
 
-Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions. The one/two-sample energy checks do not claim a complete compact-only integer feasibility proof for arbitrary longer windows; full sidecar verification reconstructs the actual PCM evidence.
+Long-frame and transient energies are bounded by source-sized PCM16/window maxima, transform-power and ranking constraints are enforced, and short-source integer feasibility is checked where exact compact constraints are available. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions. The one/two-sample energy checks and joint three-frame Gram/window-energy check do not claim a complete compact-only integer feasibility proof for arbitrary longer windows or full spectral commitments; full sidecar verification reconstructs the actual PCM evidence.
+
+For a single long event, aggregate entries are exact single-row powers. A bounded two-square filter checks all bins, including omitted interior bins: each nonzero power has odd part 1 modulo 4 and even valuations of the fixed primes `{3, 7, 11, 19, 23, 31}`. DC and Nyquist additionally require exact squares. This rejects necessary-condition violations without unbounded factorization of large powers. It is not a complete two-square existence proof, and is not applied to multi-event sums. The full sidecar checks actual coefficient arithmetic separately.
 
 Canonical byte comparison is used where exact typed structure matters.
 

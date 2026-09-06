@@ -223,6 +223,8 @@ windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
 
 When `a = 1`, the energy must additionally equal `x^2` for a signed PCM16 integer `x`. When `a = 2`, it must equal `x^2 + 4*y^2` for signed PCM16 integers `x` and `y`. These exact feasibility checks apply to every channel, including mono sources, and to one- or two-sample tails of longer sources. An upper bound alone does not permit an unattainable integer energy. For longer windows these checks do not claim to solve the full integer realizability problem; full sidecar verification separately reconstructs and binds the actual samples.
 
+For a channel with exactly one long event, `aggregate_power_by_bin` is its exact power row. Every entry, including omitted interior bins, must be a sum of two integer squares; DC and Nyquist must additionally be perfect squares. The compact verifier applies these bounded necessary checks to each nonzero entry: remove all powers of two and require the remaining odd part to be 1 modulo 4; require an even exponent of each prime in the fixed set `{3, 7, 11, 19, 23, 31}`. Zero is allowed. These checks reject impossible powers such as 3, 6, 12, and 21 without attempting unbounded factorization of large FFT integers. Passing them is not a complete two-square factorization proof or proof of a realizable FFT row. The single-row restriction does not apply to aggregates over multiple events, which sum more than two squares. Full sidecar verification checks the actual integer coefficients.
+
 The complete complex and power matrices are committed separately with:
 
 ```text
@@ -344,7 +346,18 @@ For short sources, additional integer realizability constraints are identity-bea
 windowed_energy = sample[0]^2 * w[0]^2 + sample[1]^2 * w[1]^2
 ```
 
-with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid. For a three-frame multi-channel source, every declared channel energy must at minimum satisfy the exact three-square realizability condition.
+with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid.
+
+For a three-frame multi-channel source, one joint assignment of signed PCM16 triples must reproduce every Gram entry and each channel's long-window energy. Individually realizable diagonals or separate witnesses for each pair are insufficient. For each channel, with declared source energy `E` and windowed energy `W`, its candidate triple `(x, y, z)` must satisfy:
+
+```text
+E = x^2 + y^2 + z^2
+W = x^2 + 4*y^2 + 9*z^2
+W - E = 3*y^2 + 8*z^2
+-32768 <= x, y, z <= 32767
+```
+
+The reference enumerates at most 32769 magnitudes of `z`, derives `y^2` and `x^2` exactly, checks integer squares and PCM16 limits, and then searches for one assignment satisfying all channel dot products. The magnitude 32768 permits only the negative sign. This is an exact feasibility check for the declared three-frame Gram and weighted-energy data, not a reconstruction of the committed full spectrum or a general feasibility solver for arbitrary source lengths.
 
 These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
 
@@ -396,8 +409,9 @@ It requires:
 - canonical matrix/source SHA-256 digests;
 - valid bounded decimal strings;
 - valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
+- the bounded single-event aggregate two-square checks and exact endpoint squares in section 5, including bins omitted from the compact components;
 - valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
-- valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including exact two-frame long-energy compatibility;
+- valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including joint two- and three-frame Gram/long-energy compatibility;
 - the final domain-separated percept digest.
 
 Untrusted decimal strings are bounded to at most 1024 digits before `int()` conversion. This is both a format bound and a fail-closed guard against Python's configurable integer-string digit limit.
@@ -447,6 +461,8 @@ Acceptance requires all of the following identity-bearing evidence relationships
 The public sidecar writer validates the supplied `PCM16Wave` independently before rebuilding analysis or touching its destination. The Python API requires an immutable tuple of channel tuples with exactly the declared channel count and frame count, plain signed PCM16 integer samples, and adapter-valid integer metadata. It recomputes SHA-256 over the samples serialized in frame order, then ascending channel order within each frame, with each sample encoded as signed 16-bit little-endian bytes. This digest must equal `pcm_s16le_sha256`; a stale or directly constructed inconsistent wave raises `ValueError` before any sidecar output or receipt. Hashing uses bounded payload chunks, not a complete duplicate PCM payload.
 
 The writer then accepts an envelope only when rebuilding v0.2 analysis from those validated samples produces that exact canonical envelope, so it cannot emit a receipt for evidence that contradicts declared matrix or observation commitments. The destination must be provably empty, seekable, and positioned at byte/character offset zero before the header is written; append-positioned or stale-tail destinations are rejected.
+
+Every record payload and LF terminator must be fully accepted by the destination before the writer returns a successful receipt. The Python adapter loops on legal short writes; a write count must be a plain integer greater than zero and no greater than the remaining payload length. Zero, `None`, negative, Boolean, non-integer or oversized counts raise `OSError`, and destination exceptions propagate. A failed write may leave partial output, but must not return a successful receipt. This is not a transactional rollback or durable-storage guarantee. Binary-backed text streams use exact UTF-8 bytes; the adapter's text `write()` return value is the completed character count.
 
 `PCM16Wave` does not retain the original RIFF container bytes. This writer check therefore validates the sample-payload commitment, not a reconstruction of `source_sha256` or authenticity of the source recording.
 
