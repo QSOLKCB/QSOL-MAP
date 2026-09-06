@@ -16,6 +16,41 @@ def _reexport(module) -> None:
 _reexport(_receipts_module)
 
 
+def _line_limit_modules():
+    """Return verifier modules that consume the public sidecar line limit."""
+    modules = [_receipts_module]
+    for name in ("_base", "_consistency"):
+        module = getattr(_receipts_module, name, None)
+        if module is not None:
+            modules.append(module)
+            nested = getattr(module, "_core", None)
+            if nested is not None:
+                modules.append(nested)
+    unique = []
+    seen = set()
+    for module in modules:
+        identity = id(module)
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(module)
+    return unique
+
+
+def verify_spectral_sidecar(envelope: dict, lines) -> bool:
+    """Verify while preserving the public configurable sidecar line bound."""
+    limit = MAX_SIDECAR_LINE_CHARS
+    previous = []
+    try:
+        for module in _line_limit_modules():
+            if hasattr(module, "MAX_SIDECAR_LINE_CHARS"):
+                previous.append((module, module.MAX_SIDECAR_LINE_CHARS))
+                module.MAX_SIDECAR_LINE_CHARS = limit
+        return _receipts_module.verify_spectral_sidecar(envelope, lines)
+    finally:
+        for module, old_limit in reversed(previous):
+            module.MAX_SIDECAR_LINE_CHARS = old_limit
+
+
 def write_spectral_sidecar(wave, envelope: dict, stream):
     """Write only evidence that exactly matches the supplied PCM16 waveform."""
     if not _mr.verify_multiresolution_envelope(envelope):
