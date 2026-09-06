@@ -215,6 +215,8 @@ The rule is explicitly authored and versioned as `energy-rise-3-over-2-v0.2`.
 
 For a transition from zero previous energy, `rise_ratio` is `null` rather than a rational value with a zero denominator. For non-zero previous energy, the packet stores the exact finite ratio `current / previous` as decimal-string numerator and denominator.
 
+Candidate energies and summary totals must fit the source-sized PCM16 maximum induced by the frozen 256-sample triangular window. If fewer than two short frames exist, no transition can be formed and both transient summary totals are zero.
+
 This is a deterministic L1 event rule, not a validated model of human onset perception.
 
 ## 9. Channel relationships
@@ -227,6 +229,8 @@ For each pair `i < j`, v0.2 records exact full-source integer quantities includi
 - left/right sum of squares;
 - difference and sum signal energies;
 - zero-lag correlation squared when both channel energies are non-zero.
+
+The complete channel Gram matrix must be positive semidefinite and its exact rank must not exceed the source frame count. This preserves joint feasibility in the actual sample-dimensional space, rather than validating only pairwise arithmetic.
 
 These are signal relationships. They do not infer speaker geometry, source direction, or perceived stereo width.
 
@@ -250,14 +254,24 @@ It is canonical NDJSON containing:
 Each coefficient entry is `["real","imag","power"]`, with canonical bounded decimal strings and exact `power = real^2 + imag^2` verification.
 
 The sidecar verifier checks:
-- canonical line encoding;
+- canonical line encoding and bounded reads;
 - exact header identity;
 - plain non-Boolean integer position fields;
 - deterministic row order;
 - coefficient arithmetic;
 - row/record receipts;
 - reconstructed short and long matrix commitments;
-- no missing or extra records.
+- exact inverse reconstruction of PCM16 from both profiles with overlap, tail and window-divisibility checks;
+- equality of the short- and long-profile reconstructed waveforms;
+- reconstructed interleaved PCM SHA-256 against `source.pcm_s16le_sha256`;
+- frozen v0.1 percept identity rebuilt from short-profile evidence;
+- transient observations rebuilt from short rows;
+- channel relationships rebuilt from recovered PCM;
+- no missing, extra or decode-failed records.
+
+The public sidecar writer first rebuilds the deterministic v0.2 percept from the supplied WAV and requires exact canonical equality with the envelope it was given. It therefore cannot issue a receipt for sidecar rows that contradict declared matrix or observation commitments.
+
+The verifier uses bounded temporary spools for reconstructed PCM instead of materializing complete spectral matrices or an unbounded waveform in memory.
 
 The sidecar is a receiver of committed L1 evidence. It does not replace the compact percept identity.
 
@@ -269,7 +283,11 @@ Identity-bearing decimal strings are bounded before conversion to Python integer
 
 Boolean values are not accepted where schema fields require integers, even though Python considers `False == 0` and `True == 1` in ordinary equality.
 
+Long-frame and transient energies are bounded by source-sized PCM16/window maxima. The channel Gram matrix must be jointly feasible in no more than `frame_count` dimensions.
+
 Canonical byte comparison is used where exact typed structure matters.
+
+Output-path collision checks use filesystem identity for existing paths and probe case sensitivity for initially nonexistent case-equivalent names in a shared output directory.
 
 ## 12. SoundStream relationship
 
