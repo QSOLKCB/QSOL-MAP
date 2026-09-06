@@ -2,7 +2,7 @@
 
 **QSOL Machine Perception Audio Protocol**
 
-QSOL-MAP is an experimental protocol and reference implementation for representing audio as a deterministic, machine-readable acoustic observation before any learned tokenization or semantic interpretation is applied.
+QSOL-MAP is an experimental protocol and deterministic reference implementation for representing audio as machine-readable acoustic evidence before learned tokenization, semantic interpretation, or human perceptual reporting is applied.
 
 The project starts from a simple premise:
 
@@ -32,111 +32,226 @@ No layer may silently promote itself into another.
 
 A neural token is not the waveform. A deterministic spectrum is not subjective hearing. A semantic label is not a measured physical property. A human report is not automatically universal perception.
 
-## Current status
+## Current status: v0.2.0 multi-resolution L1
 
-The first reference profile implements **L1 deterministic acoustic observation** for strict PCM16 RIFF/WAVE input.
+QSOL-MAP currently implements two deterministic Layer-1 profiles.
+
+### Frozen v0.1 short reference
 
 ```text
-RIFF/WAVE bytes
-      |
-      +-> source SHA-256
-      |
-      +-> PCM16 payload SHA-256
-      |
-      +-> per-channel waveform observations
-      |
-      +-> exact integer triangular window
-      |
-      +-> exact-integer 256-point FFT reference
-      |
-      +-> complex-matrix commitment
-      +-> power-matrix commitment
-      +-> aggregate power by frequency bin
-      +-> compact frame events with dominant components
-      |
-      +-> canonical percept document
-      |
-      +-> domain-separated percept SHA-256
+qsol-map-fixed-fft-v0.1
 ```
 
-The implementation deliberately does **not** contain a neural model yet. Learned residual-vector-quantized representations belong at L2 and will be introduced as a receiver of L1 evidence rather than as a replacement for it.
+This published profile remains unchanged:
 
-## Why this architecture
+- strict PCM16 RIFF/WAVE input;
+- 256-sample frames with 128-sample hops;
+- exact integer triangular window;
+- frozen Q15 complex twiddles;
+- exact unbounded-integer Python FFT reference;
+- independent source, PCM, complex-matrix, power-matrix, and percept commitments;
+- frozen end-to-end golden vector.
 
-The project combines ideas already explored in related QSOL repositories:
+### v0.2 multi-resolution reference
 
-- **QSOLKCB/SONIFICATION**: receiver-neutral committed event documents, deterministic ordering, acyclic receipts, and strict claim boundaries.
-- **QSOLKCB/SPECTRAL**: deterministic DSP, WAV/PCM handling, spectral views, provenance manifests, fingerprints, and cross-modal signal experiments.
-- **QSOLKCB/E8_MUSIC**: explicit separation of canonical observation from interpretive musical rendering, source-to-signal identity chains, executable conformance, and formal-assurance boundaries.
-- **QSOLKCB/OPT**: correctness-preserving optimization patterns for tests, DSP, invariant-driven reuse, bounded parallel work, and future Lean CI.
+```text
+qsol-map-multiresolution-v0.2
+```
 
-The neural-codec reference point is:
+v0.2 imports the frozen v0.1 evidence and adds:
 
-> Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, Marco Tagliasacchi, *SoundStream: An End-to-End Neural Audio Codec*, arXiv:2107.03312.
+- `qsol-map-fixed-fft-1024-v0.2`, a deterministic 1024-sample / 512-hop long-window reference;
+- separate long complex-matrix and power-matrix commitments;
+- exact represented-frequency support up to source Nyquist;
+- authored `[0,20 kHz)`, `[20,40 kHz)`, and `[40 kHz,Nyquist]` power regions;
+- **no psychoacoustic low-pass filter**;
+- deterministic short-frame energy-rise transient candidates;
+- exact pairwise channel relationships without downmixing;
+- optional full short+long canonical NDJSON spectral sidecars;
+- strict sidecar ordering, arithmetic, matrix-commitment, and receipt verification;
+- a frozen v0.2 golden percept vector.
 
-SoundStream demonstrates that general audio can be transformed into learned embeddings and residual-vector-quantized discrete representations. QSOL-MAP uses that as architectural motivation for a future L2 token receiver while preserving an independently inspectable L1 path.
+The v0.2 packet remains Layer 1. It does not introduce neural tokens or semantic music interpretation.
+
+## Why two spectral resolutions?
+
+The v0.1 short transform provides finer temporal sampling:
+
+```text
+frame = 256 samples
+hop   = 128 samples
+bins  = 0..128
+```
+
+The v0.2 long transform adds finer frequency-bin spacing:
+
+```text
+frame = 1024 samples
+hop   = 512 samples
+bins  = 0..512
+```
+
+Both use exact integer triangular windows, frozen Q15 twiddle tables, and exact Python integer arithmetic in the reference path.
+
+QSOL-MAP deliberately keeps both resolutions rather than pretending one analysis scale captures every relevant structure.
+
+## High-sample-rate observation
+
+For sample rate `f_s`, long bin `k` represents the exact rational frequency:
+
+```text
+f_k = k * f_s / 1024
+```
+
+v0.2 retains all represented bins through source Nyquist. It does not discard represented content above conventional human-audible ranges merely because a human listener may not hear it.
+
+That does **not** mean a high sample rate proves the microphone, ADC, source medium, or previous processing chain captured physically valid ultrasonic information. QSOL-MAP observes the supplied sampled signal under its declared contract.
+
+## Deterministic transient candidates
+
+v0.2 derives transient candidates from consecutive frozen v0.1 short-frame energies.
+
+A frame is a candidate when:
+
+```text
+current > previous
+and
+2 * current >= 3 * previous
+```
+
+The rule identifier is:
+
+```text
+energy-rise-3-over-2-v0.2
+```
+
+For a transition from zero previous energy, `rise_ratio` is `null`. A finite rational numerator/denominator is emitted only when the previous energy is non-zero.
+
+This is an authored deterministic signal event, not a claim of equivalence to human onset perception.
+
+## Channel relationships
+
+QSOL-MAP never implicitly downmixes canonical input.
+
+For every channel pair `i < j`, v0.2 records exact quantities including:
+
+- dot product and sign;
+- each channel's sum of squares;
+- `left - right` energy;
+- `left + right` energy;
+- exact zero-lag correlation squared when both channel energies are non-zero.
+
+These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
+
+## Optional full spectral sidecar
+
+The compact percept commits to full matrices without embedding every coefficient.
+
+v0.2 can additionally write:
+
+```text
+qsol-map-spectral-sidecar-v0.2
+```
+
+as canonical NDJSON containing:
+
+1. one header;
+2. every frozen short-profile spectral row;
+3. every long-profile spectral row;
+4. one receipt trailer.
+
+Every coefficient is encoded as:
+
+```json
+["real", "imag", "power"]
+```
+
+with exact decimal strings and verified `power = real^2 + imag^2`.
+
+The verifier checks:
+
+- canonical line encoding;
+- exact typed header data;
+- plain non-Boolean integer position fields;
+- deterministic row order;
+- coefficient arithmetic;
+- record and receipt hashes;
+- reconstructed v0.1 and v0.2 matrix commitments;
+- missing or extra records.
+
+The writer and verifier process one spectral row at a time rather than building complete sidecar matrices in memory.
 
 ## Quick start
 
 No third-party Python packages are required.
 
+### Frozen v0.1
+
 ```bash
-python3 -m qsol_map analyze input.wav -o percept.json
-python3 -m qsol_map verify percept.json
+python3 -m qsol_map analyze input.wav -o percept-v01.json
+python3 -m qsol_map verify percept-v01.json
 ```
 
-The current input adapter accepts:
+### v0.2
 
-- RIFF/WAVE;
+```bash
+python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json
+python3 -m qsol_map analyze-v0.2 input.wav -o percept-v02.json --sidecar spectral-v02.ndjson
+python3 -m qsol_map verify-v0.2 percept-v02.json
+python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
+```
+
+The CLI rejects using the same filesystem path for the compact percept and the sidecar, preventing one output from truncating the other.
+
+## Strict input boundary
+
+The canonical adapter accepts:
+
+- little-endian RIFF/WAVE;
 - uncompressed integer PCM format 1;
+- exact 16-byte PCM `fmt ` chunks;
 - signed 16-bit samples;
 - 1 to 8 channels;
-- sample rates from 1 Hz through 768 kHz.
+- sample rates from 1 Hz through 768 kHz;
+- non-empty data containing complete PCM frames.
+
+The adapter performs no hidden:
+
+- resampling;
+- normalization;
+- channel mixing;
+- filtering;
+- dithering;
+- mastering;
+- metadata-derived signal transformation.
 
 Unsupported or malformed inputs fail closed.
 
-## What the packet contains
+## Canonical verification
 
-Each channel records:
+Identity-bearing JSON remains float-free. Large exact integer observations are decimal strings.
 
-- exact sample count;
-- peak absolute PCM value;
-- sum of squared samples;
-- zero-crossing count;
-- aggregate spectral power for bins `0..128`;
-- a SHA-256 commitment to the complete complex transform matrix;
-- a SHA-256 commitment to the complete power matrix;
-- per-frame energy;
-- exact rational spectral-centroid components;
-- deterministic top spectral components including real, imaginary, and power values.
+v0.2 bounds untrusted decimal-string length before converting it to Python integers. This preserves the verifier's fail-closed Boolean contract even on Python builds that enforce an integer-string digit limit.
 
-Large integer observations are serialized as decimal strings. Identity-bearing JSON forbids floating-point numbers.
+The verification path also rejects Boolean values where canonical schemas require integers. Ordinary Python equality treats `False == 0` and `True == 1`; QSOL-MAP does not allow that language behavior to blur protocol types.
 
-Frequency for bin `k` is represented by the exact rule
+## Golden vectors
+
+The test suite protects both protocol generations:
+
+- frozen v0.1 percept SHA-256:
 
 ```text
-f_k = k * sample_rate_hz / 256
+e7ec380529d01790981e819bf5f33f8c251a6c89caafe19458b9053ae573b49c
 ```
 
-so no floating-point frequency value has to enter canonical identity.
+- v0.2 multi-resolution percept SHA-256:
 
-## Determinism
+```text
+c167694d60661ceac1d01d6504cbd8b5db77286ce09b28a342629b03046735d7
+```
 
-The current reference profile uses:
-
-- exact integer triangular-window coefficients;
-- frozen integer complex twiddle coefficients;
-- exact Python integer arithmetic;
-- no runtime trigonometric evaluation;
-- no random input;
-- no learned model;
-- canonical JSON with sorted keys;
-- domain-separated SHA-256 commitments;
-- no timestamps, filenames, filesystem paths, or UI state in percept identity.
-
-The test suite contains a frozen end-to-end golden percept vector.
-
-Cross-language conformance is a future milestone. The current claim is about the versioned Python reference contract, not every possible reimplementation.
+The fixtures are defined in the regression suite. A released profile's golden identity must not change silently.
 
 ## Tests
 
@@ -144,51 +259,88 @@ Cross-language conformance is a future milestone. The current claim is about the
 python3 -m unittest discover -s tests -v
 ```
 
-CI intentionally stays small and dependency-free. It follows the QSOLKCB/OPT rule that correctness outranks speed: the complete reference suite runs on every pull request and every push to `main`, while unnecessary environment setup and redundant lanes are avoided.
+Coverage includes:
+
+- frozen v0.1 identity;
+- repeated byte-identical v0.2 analysis;
+- v0.2 golden identity;
+- high-sample-rate represented-bin retention;
+- silence-to-signal transient handling;
+- exact channel relationships;
+- malformed/oversized verifier input;
+- sidecar round-trip and tamper rejection;
+- Boolean sidecar position rejection even after receipt recomputation;
+- CLI v0.2 and sidecar round-trips;
+- output-path collision rejection;
+- direct checkout execution of the benchmark harness.
+
+## Benchmarking and optimization
+
+QSOL-MAP follows `QSOLKCB/OPT`: correctness outranks speed, reference behavior remains available, and performance claims stay local to measured environments.
+
+The environment-scoped benchmark runs directly from a checkout:
+
+```bash
+python3 scripts/benchmark_v02.py
+```
+
+It records runtime/toolchain context and deterministic percept identity. It is **not** a CI performance gate and does not establish a portable speedup.
+
+## Research lineage
+
+The architecture draws on:
+
+- **QSOLKCB/SONIFICATION**: receiver-neutral committed events, deterministic ordering, acyclic receipts, and claim boundaries;
+- **QSOLKCB/SPECTRAL**: deterministic DSP, WAV/PCM handling, spectral views, provenance, and cross-modal signal experiments;
+- **QSOLKCB/E8_MUSIC v1.1.0**: canonical observation contracts, source-to-signal identity chains, executable conformance, and formal-assurance boundaries;
+- **QSOLKCB/OPT**: correctness-preserving optimization patterns for tests, DSP, invariant reuse, parallel work, and future Lean CI.
+
+Neural-codec architectural reference:
+
+> Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, Marco Tagliasacchi, *SoundStream: An End-to-End Neural Audio Codec*, arXiv:2107.03312.
+
+SoundStream demonstrates learned embeddings and residual vector quantization. QSOL-MAP reserves such learned representation for a future **L2 receiver**, separately identified from deterministic L1 evidence.
+
+No SoundStream code, model weights, or codebooks are included.
 
 ## Research direction
-
-The intended stack is:
 
 ```text
                   canonical audio source
                            |
                            v
               L1 deterministic observation
-                           |
-             +-------------+-------------+
-             |                           |
-             v                           v
-      exact spectral events       learned audio encoder
-                                         |
-                                         v
-                               residual vector quantizer
-                                         |
-                                         v
-                                  L2 token stream
-                                         |
-                           +-------------+-------------+
-                           |                           |
-                           v                           v
-                    visual receiver             haptic receiver
-                           \                           /
-                            \                         /
-                             +---------> L3 <---------+
-                                      semantics
-                                         |
-                                         v
-                              L4 human-labelled data
+                 /                   \
+                /                     \
+       short + long spectra       future learned encoder
+       transient/channel data             |
+       optional full sidecar               v
+                |                          RVQ
+                |                           |
+                |                           v
+                |                    L2 token stream
+                |                           |
+                +------------+--------------+
+                             |
+                             v
+                        L3 semantics
+                             |
+                             v
+                       L4 human reports
 ```
 
-See [ROADMAP.md](ROADMAP.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+See:
+
+- [ROADMAP.md](ROADMAP.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/CLAIM_BOUNDARIES.md](docs/CLAIM_BOUNDARIES.md)
+- [spec/QSOL-MAP-MULTIRES-v0.2.md](spec/QSOL-MAP-MULTIRES-v0.2.md)
 
 ## Claim boundary
 
-QSOL-MAP does not claim that an AI has subjective auditory experience. It does not equate spectral analysis with human hearing, learned tokens with physical truth, or semantic labels with objective properties of music.
+QSOL-MAP does **not** claim that an AI has subjective auditory experience. It does not equate spectral analysis with human hearing, represented ultrasonic bins with verified physical ultrasonic capture, learned tokens with physical truth, or semantic labels with objective properties of music.
 
-The current percept packet is compact and non-invertible. It is an observation record, not a lossless audio codec.
-
-See [docs/CLAIM_BOUNDARIES.md](docs/CLAIM_BOUNDARIES.md).
+The compact percept and spectral sidecar are observation records under versioned contracts, not replacements for the source waveform and not proofs of scientific validity.
 
 ## Licence
 
