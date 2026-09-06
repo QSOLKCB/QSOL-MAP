@@ -151,6 +151,8 @@ For every channel pair `i < j`, v0.2 records exact quantities including:
 
 The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count. Very short sources receive additional integer-realizability checks; for two- and three-frame multichannel sources one shared PCM16 vector assignment must reproduce every declared Gram entry and each long-window energy. Three-frame checks use source energy `x^2 + y^2 + z^2` and weighted energy `x^2 + 4*y^2 + 9*z^2`, with exact signed PCM16 limits. Individually feasible diagonals or separate pairwise witnesses are not enough. Two-frame mono sources have no pairwise records, but must still admit integer PCM16 samples realizing their weighted energy.
 
+Three-frame mono sources also require a signed PCM16 triple realizing `x^2 + 4*y^2 + 9*z^2` and the same DC/Nyquist aggregate powers. The exact endpoint scale `32768^10` reduces this to at most eight candidates, so an impossible energy such as `2` cannot bypass validation merely because mono has no Gram records. This check covers the complete three-frame mono source, not three-sample tails of longer recordings or the remaining spectral/source commitments. See specification section 8.1.
+
 These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
 
 ## Optional full spectral sidecar

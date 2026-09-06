@@ -28,6 +28,7 @@
 - [x] Require exact one/two-sample long-window energy feasibility for mono and multichannel sources and tails, and for previous/current short-tail energies in transient candidates.
 - [x] Check omitted single-event aggregate powers using bounded necessary two-square conditions, while preserving the distinction from multi-event sums and full coefficient verification.
 - [x] Require one joint PCM16 assignment for three-frame multichannel Gram data and exact long-window energies, not just realizable diagonals or separate pairwise witnesses.
+- [x] Validate three-frame mono weighted energy against signed PCM16 triples and exact DC/Nyquist powers with at most eight endpoint-derived candidates, without a coordinate search.
 - [x] Account for omitted transient candidates and transition multiplicity in compact summary verification.
 - [x] Reconstruct short and long sidecar profiles back to one PCM16 waveform and bind it to the PCM digest, frozen v0.1 identity, transient observations and channel relationships.
 - [x] Verify canonical UTF-8/LF sidecar bytes before text newline translation and require empty writer destinations.
@@ -55,6 +56,8 @@ qsol-map-spectral-sidecar-v0.2
 Sidecar conformance includes exact UTF-8/LF record bytes, exact reconstruction of both spectral profiles to one PCM16 waveform, verification of the reconstructed interleaved PCM SHA-256, rebuild of the frozen v0.1 percept identity, and reconstruction of transient/channel observations.
 
 The full normative long transform is in specification section 4.1. The short-window feasibility checks reject unattainable one/two-sample energies without claiming complete compact-only integer feasibility for arbitrary lengths. The three-frame multichannel check is exact for its declared Gram and window-energy data; the single-event two-square filter is a bounded necessary check, not general large-integer factorization. Writer-side PCM validation binds the actual sample payload; it cannot recompute the original RIFF container hash from a `PCM16Wave` object that does not retain those bytes. Write-completion checks prevent false success receipts, but do not promise rollback of partial output or durable storage.
+
+The three-frame mono check in specification section 8.1 is exact for its weighted energy and two endpoint powers. It does not extend to three-sample tails of longer sources or prove the remaining spectral/source commitments. Regression coverage includes the rehashed energy-2 example, 14625 exhaustive small energy/endpoint cases, signed PCM16 limits and unchanged sidecar round trips.
 
 v0.2 remains Layer 1 deterministic acoustic observation. It does not introduce learned tokenization or semantic interpretation.
 

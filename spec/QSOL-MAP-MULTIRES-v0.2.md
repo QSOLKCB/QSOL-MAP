@@ -361,6 +361,34 @@ The reference enumerates at most 32769 magnitudes of `z`, derives `y^2` and `x^2
 
 These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
 
+### 8.1 Three-frame mono weighted-energy feasibility
+
+A source with exactly three PCM frames and one channel has no Gram records, but its long event must still admit signed PCM16 samples `(x, y, z)` with:
+
+```text
+W = x^2 + 4*y^2 + 9*z^2
+-32768 <= x, y, z <= 32767
+```
+
+There is exactly one long event, so its DC and Nyquist aggregate powers `P0` and `P512` are exact frame powers. Section 4.1 gives the exact endpoint scale `s = 32768^10`. The same candidate triple must satisfy:
+
+```text
+P0   = (s * (x + 2*y + 3*z))^2
+P512 = (s * (x - 2*y + 3*z))^2
+```
+
+Both powers must be perfect squares whose nonnegative square roots are divisible by `s`. For every sign choice `D = +/-sqrt(P0)/s` and `N = +/-sqrt(P512)/s`, compute:
+
+```text
+y = (D - N) / 4
+A = (D + N) / 2
+R = 2 * (W - 4*y^2) - A^2
+```
+
+Require exact integer division and a nonnegative perfect square `R`. For either root `d = +/-sqrt(R)`, derive `x = (A+d)/2` and `z = (A-d)/6`, again requiring exact division and all three signed PCM16 bounds. At least one valid triple must exist. Zero signs or repeated roots need not be duplicated. There are at most eight candidate triples, so no search over PCM16 coordinate pairs or large-integer factorization is needed.
+
+This is exact feasibility for the declared weighted energy and the two endpoint powers. It does not verify the remaining spectrum, its matrix commitments, or the source digests. The check applies to the complete three-frame mono source, not to three-sample tails of longer sources where aggregate endpoints are sums across events. Full sidecar verification remains the complete reconstructed-evidence check. In particular, rehashing a genuine `[1, 0, 0]` envelope after replacing its energy `"1"` with `"2"` must return `False`.
+
 ## 9. Compact percept identity
 
 The v0.2 core schema is:
@@ -409,6 +437,7 @@ It requires:
 - canonical matrix/source SHA-256 digests;
 - valid bounded decimal strings;
 - valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
+- three-frame mono weighted-energy and endpoint-power feasibility under section 8.1, without bypassing mono sources because Gram records are absent;
 - the bounded single-event aggregate two-square checks and exact endpoint squares in section 5, including bins omitted from the compact components;
 - valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
 - valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including joint two- and three-frame Gram/long-energy compatibility;

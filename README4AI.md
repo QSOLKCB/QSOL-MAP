@@ -62,6 +62,8 @@ The compact verifier also requires the complete channel Gram matrix to be positi
 
 One- and two-sample long windows, including mono sources and source tails, require exact energies `x^2` and `x^2 + 4*y^2` respectively for PCM16 integers. The same rule applies independently to previous/current short frames reported by transient candidates. Bounds for longer windows are not a complete proof of integer realizability; full sidecar verification reconstructs actual PCM evidence.
 
+A three-frame mono source must admit a signed PCM16 triple with energy `x^2 + 4*y^2 + 9*z^2` and the same DC/Nyquist aggregate powers. The endpoint magnitudes must be exact multiples of `32768^10`; after removing that scale, exact square/divisibility checks recover at most eight candidate triples. This check applies to the complete three-frame mono source, not three-sample tails of longer recordings, and does not certify the remaining spectrum or source commitments. See specification section 8.1.
+
 When there is exactly one long event, all aggregate bin powers, including omitted interior bins, receive bounded necessary two-square checks: nonzero odd part 1 modulo 4 and even valuations of primes `{3, 7, 11, 19, 23, 31}`. Endpoint powers must additionally be perfect squares. These checks are not a complete large-integer factorization proof and must not be applied to aggregates summed across multiple events. See specification section 5.
 
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.

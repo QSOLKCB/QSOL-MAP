@@ -111,6 +111,8 @@ Short sources receive additional integer-realizability constraints. In particula
 
 For three-frame multichannel sources, the verifier requires one common assignment of signed PCM16 triples satisfying every channel dot product and both source energy `E = x^2 + y^2 + z^2` and long energy `W = x^2 + 4*y^2 + 9*z^2`. The search derives candidates from `W-E = 3*y^2 + 8*z^2`, preserving the asymmetric signed range at -32768. It rejects jointly impossible triples even when each pair has a separate witness. This is exact feasibility for these Gram and weighted-energy quantities, not verification of the full matrix commitments.
 
+For a complete three-frame mono source, absence of Gram records does not waive weighted-energy feasibility. The verifier requires a signed PCM16 triple matching `W = x^2 + 4*y^2 + 9*z^2` and both DC/Nyquist aggregate powers with exact endpoint coefficient scale `32768^10`. Square and divisibility checks recover at most eight candidates, preserving -32768 while excluding +32768. This is exact for those three observations only: it does not certify remaining spectral coefficients, matrix commitments or source digests, and does not apply that endpoint-aggregate rule to three-sample tails of longer sources. See specification section 8.1.
+
 These compact checks are necessary constraints, not a complete proof that every arbitrary-length compact observation has an integer waveform realization. Full sidecar verification separately reconstructs and binds actual PCM samples.
 
 They do not by themselves establish acoustic scene geometry or spatial perception.

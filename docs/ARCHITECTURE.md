@@ -242,6 +242,8 @@ Short sources have additional integer-realizability checks. For two-frame multic
 
 Three-frame multichannel sources likewise require one common assignment of PCM16 triples satisfying every Gram entry and each long energy. With source energy `E` and long energy `W`, the exact equations are `E = x^2 + y^2 + z^2` and `W = x^2 + 4*y^2 + 9*z^2`. The helper uses `W-E = 3*y^2 + 8*z^2` to enumerate at most 32769 third-coordinate magnitudes, derives the other squares and valid signed samples, then checks joint compatibility across all channels. Diagonal three-square checks and separate pairwise witnesses alone cannot establish this joint assignment. See specification section 8.
 
+The three-frame mono path has no Gram energy to use, so it binds `W = x^2 + 4*y^2 + 9*z^2` to the sole long event's DC/Nyquist aggregate powers instead. Their coefficient magnitudes must be exactly divisible by `32768^10`. Enumerating the two endpoint signs gives `y = (D-N)/4` and `A = (D+N)/2`; the square `(x-3*z)^2 = 2*(W-4*y^2)-A^2` then yields at most eight signed PCM16 triples. At least one must exist. This is exact for the weighted energy and endpoint powers only, not the remaining spectral/source commitments, and is not applied to three-sample tails of longer sources. See specification section 8.1.
+
 These are signal relationships. They do not infer speaker geometry, source direction, or perceived stereo width.
 
 ## 10. Compact packet and complete sidecar evidence
