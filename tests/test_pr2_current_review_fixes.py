@@ -67,10 +67,10 @@ class CurrentCompactReviewFixes(unittest.TestCase):
         self.assertFalse(mr.verify_multiresolution_envelope(changed))
 
     def test_aggregate_bin_is_capped_by_omitted_event_rankings(self):
-        # Each long event is a one-sample impulse, so all bins tie and bins
-        # 0..7 are the authored top-K. Every omitted bin is already exactly at
-        # the maximum contribution allowed by the two weakest selected powers.
-        samples = [1] + [0] * 511 + [1]
+        # One shared impulse appears in both long events. A one-sample row has
+        # flat power across bins, so both events author bins 0..7 as their
+        # deterministic top-K and every omitted bin starts at its exact cap.
+        samples = [0] * 512 + [1]
         changed = copy.deepcopy(
             mr.build_multiresolution_percept(parse_pcm16_wav(make_wav(samples)))
         )
