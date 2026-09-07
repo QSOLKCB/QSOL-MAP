@@ -43,23 +43,26 @@ def _line_limit_modules():
     return unique
 
 
-def _stringio_preserves_lf(stream: io.StringIO) -> bool:
-    """Return whether this StringIO's configured newline mode preserves LF.
+def _stringio_preserves_lf(
+    stream: io.StringIO, *, verification_input: bool = False
+) -> bool:
+    """Return whether this StringIO's newline mode preserves canonical LF.
 
     ``StringIO`` exposes no public accessor for its constructor ``newline``
     mode. Its pickle state records that mode as the second field; fail closed
-    if the state shape is unavailable or unfamiliar rather than risking a
-    receipt for CR/CRLF-translated records.
+    if the state shape is unavailable or unfamiliar. Writers may safely use
+    ``newline=None`` because writing LF still stores LF. Verifiers may not:
+    that mode translates CRLF already supplied to the constructor into LF and
+    can therefore erase evidence of noncanonical input before verification.
     """
     try:
         state = stream.__getstate__()
     except (AttributeError, TypeError, ValueError):
         return False
-    return (
-        isinstance(state, tuple)
-        and len(state) >= 2
-        and state[1] in (None, "", "\n")
-    )
+    if not isinstance(state, tuple) or len(state) < 2:
+        return False
+    allowed = ("", "\n") if verification_input else (None, "", "\n")
+    return state[1] in allowed
 
 
 def _ensure_empty_destination(stream) -> None:
@@ -170,15 +173,20 @@ def _exact_verification_lines(lines):
     """Verify a complete stream without hiding a prefix or translating bytes.
 
     Seekable inputs, including StringIO, must start at logical position zero.
-    Reject a nonzero position without consuming or rewinding the input. For a
-    binary-backed text stream, synchronize an already-zero logical position
-    before reading exact UTF-8 bytes, so read-ahead and CRLF translation cannot
-    hide noncanonical content. Non-seekable binary-backed text streams are read
-    directly from their binary buffer without position probes. Explicit record
-    iterables are checked as the complete supplied sequence; they expose no
-    underlying file position.
+    Reject a nonzero position without consuming or rewinding the input. A
+    StringIO is accepted only when its construction mode cannot translate CRLF
+    into LF before this boundary. For a binary-backed text stream, synchronize
+    an already-zero logical position before reading exact UTF-8 bytes, so
+    read-ahead and CRLF translation cannot hide noncanonical content.
+    Non-seekable binary-backed text streams are read directly from their binary
+    buffer without position probes. Explicit record iterables are checked as
+    the complete supplied sequence; they expose no underlying file position.
     """
     try:
+        if isinstance(lines, io.StringIO) and not _stringio_preserves_lf(
+            lines, verification_input=True
+        ):
+            return None
         binary = getattr(lines, "buffer", None)
         seekable = getattr(lines, "seekable", None)
         can_seek = (
