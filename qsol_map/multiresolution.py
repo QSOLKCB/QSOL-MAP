@@ -12,6 +12,7 @@ from .integer_checks import (
     _three_sample_vectors,
 )
 from .mono_constraints import _three_sample_window_vectors
+from .overlap_constraints import _tail_energy_fits_previous_overlap
 from .pcm_constraints import _small_window_energy_is_realizable
 from .tables import (
     FRAME_SIZE as SHORT_FRAME_SIZE,
@@ -20,6 +21,7 @@ from .tables import (
 )
 from .v02_tables import (
     LONG_FRAME_SIZE,
+    LONG_HOP_SIZE,
     LONG_TOP_K,
     LONG_WINDOW_WEIGHTS,
     Q15_ONE,
@@ -197,11 +199,20 @@ def _one_long_event_matches_aggregate(channel: dict, frame_count: int) -> bool:
         scaled_endpoint_magnitudes.append(magnitude // _LONG_FFT_ENDPOINT_SCALE)
     # DC and Nyquist are |sum(w*x)| and |sum((-1)^n*w*x)|. Their difference
     # before taking absolute values is even, and absolute value preserves
-    # parity, so the two scaled magnitudes must have matching parity.
-    if (scaled_endpoint_magnitudes[0] - scaled_endpoint_magnitudes[1]) % 2:
+    # parity, so the two scaled magnitudes must have matching parity. The
+    # exact windowed energy sum(a_i^2) has that same parity because n^2 == n
+    # modulo 2 for every integer windowed sample a_i.
+    event = events[0]
+    event_energy = _core._safe_decimal_int(event["windowed_energy"])
+    if event_energy is None:
+        return False
+    endpoint_parity = scaled_endpoint_magnitudes[0] % 2
+    if (
+        (scaled_endpoint_magnitudes[0] - scaled_endpoint_magnitudes[1]) % 2
+        or event_energy % 2 != endpoint_parity
+    ):
         return False
 
-    event = events[0]
     component_by_bin = {
         component["bin"]: component for component in event["top_components"]
     }
@@ -586,12 +597,15 @@ def _validate_percept_core(percept: object) -> bool:
             return False
         if not _one_long_event_matches_aggregate(channel, frame_count):
             return False
-        for event in channel["long_spectral"]["events"]:
+        long_events = channel["long_spectral"]["events"]
+        long_event_energies: list[int] = []
+        for event in long_events:
             sample_start = event["sample_start"]
             available = min(LONG_FRAME_SIZE, max(0, frame_count - sample_start))
             windowed_energy = _core._safe_decimal_int(event["windowed_energy"])
             if windowed_energy is None:
                 return False
+            long_event_energies.append(windowed_energy)
             max_windowed_energy = (
                 _PCM16_SQUARE_MAX * _LONG_WINDOW_SQUARE_PREFIX[available]
             )
@@ -642,6 +656,28 @@ def _validate_percept_core(percept: object) -> bool:
             weakest_selected_power = component_powers[-1]
             if denominator > (
                 selected_power_total + omitted_count * weakest_selected_power
+            ):
+                return False
+
+        # Adjacent long events share the half-window overlap. If the later
+        # event is an exact one/two-sample tail, its bounded sample witnesses
+        # must contribute no more than the preceding event's declared energy
+        # when viewed through the preceding frame's overlap weights.
+        for event_index in range(1, len(long_events)):
+            current_event = long_events[event_index]
+            current_available = min(
+                LONG_FRAME_SIZE,
+                max(0, frame_count - current_event["sample_start"]),
+            )
+            if not _tail_energy_fits_previous_overlap(
+                long_event_energies[event_index - 1],
+                long_event_energies[event_index],
+                current_available,
+                tuple(
+                    LONG_WINDOW_WEIGHTS[
+                        LONG_HOP_SIZE : LONG_HOP_SIZE + current_available
+                    ]
+                ),
             ):
                 return False
 
@@ -770,6 +806,22 @@ def _validate_percept_core(percept: object) -> bool:
                 )
                 if not _small_window_energy_is_realizable(energy, available):
                     return False
+
+            current_available = min(
+                SHORT_FRAME_SIZE,
+                max(0, frame_count - frame_index * SHORT_HOP_SIZE),
+            )
+            if not _tail_energy_fits_previous_overlap(
+                previous_energy,
+                current_energy,
+                current_available,
+                tuple(
+                    SHORT_WINDOW_WEIGHTS[
+                        SHORT_HOP_SIZE : SHORT_HOP_SIZE + current_available
+                    ]
+                ),
+            ):
+                return False
     return True
 
 
