@@ -68,6 +68,18 @@ When there is exactly one long event, all aggregate bin powers, including omitte
 
 For each channel and bin, sum the reported component powers and count the long events selecting that bin, including zero-power selections. The subtotal cannot exceed the aggregate. If the selection count equals the number of long events, the subtotal must equal the aggregate exactly; only partially selected bins can have unreported contributions.
 
+### Compact verifier conformance details
+
+The following rejection rules are identity-bearing parts of the v0.2 compact verification contract, not implementation conveniences:
+
+- after removing the exact `32768^10` scale from a one-event DC/Nyquist pair, any **reported** endpoint component keeps its signed `real` value; the signed values must satisfy the source-tail window congruences `D+N = 2*sum(even-index w*x)` and `D-N = 2*sum(odd-index w*x)`. An endpoint omitted from `top_components` remains sign-unspecified and either sign may witness the magnitude;
+- for a complete two-sample source, each channel must additionally satisfy `D^2 + N^2 = 2*windowed_energy`, so an independently realizable energy cannot contradict the exact endpoint powers;
+- for a complete three-sample mono source, the bounded PCM16 witness used by section 8.1 must match the signed value of every reported DC/Nyquist component, not merely the two endpoint magnitudes;
+- an omitted long bin may equal the weakest selected top-component power only when its larger bin index keeps it behind that selected cutoff. If its bin index is smaller than the weakest selected bin, its integer power must be strictly lower;
+- every event centroid obeys both `selected_weighted_power <= numerator` and `numerator <= selected_weighted_power + 512*(denominator-selected_power_total)`;
+- if `maximum_positive_delta` exceeds the strongest reported candidate delta, that maximum must be attainable by an actually non-candidate transition, and the positive-delta mass outside the reported candidate set must be at least that maximum;
+- when more than 16 candidates exist, the 16 reported candidates are the deterministic descending-delta/ascending-frame prefix. An omitted candidate may tie the weakest reported delta only at a later frame; an earlier frame with the same delta would displace the reported cutoff. If every transition is a candidate, the exact unreported positive mass must fit those per-frame cutoff allowances and the summary maximum equals the strongest reported candidate.
+
 Identity-bearing decimal strings are length-bounded before integer conversion so malformed untrusted envelopes fail closed rather than escaping verification.
 
 ## Identity path
