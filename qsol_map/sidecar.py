@@ -149,8 +149,10 @@ def _exact_verification_lines(lines):
     Reject a nonzero position without consuming or rewinding the input. For a
     binary-backed text stream, synchronize an already-zero logical position
     before reading exact UTF-8 bytes, so read-ahead and CRLF translation cannot
-    hide noncanonical content. Explicit record iterables are checked as the
-    complete supplied sequence; they expose no underlying file position.
+    hide noncanonical content. Non-seekable binary-backed text streams are read
+    directly from their binary buffer without position probes. Explicit record
+    iterables are checked as the complete supplied sequence; they expose no
+    underlying file position.
     """
     try:
         binary = getattr(lines, "buffer", None)
@@ -159,12 +161,12 @@ def _exact_verification_lines(lines):
             seekable() if callable(seekable)
             else callable(getattr(lines, "seek", None))
         )
-        if binary is not None or can_seek:
-            if lines.tell() != 0:
-                return None
+        if can_seek and lines.tell() != 0:
+            return None
         if binary is None:
             return lines
-        lines.seek(0)
+        if can_seek:
+            lines.seek(0)
     except (AttributeError, OSError, ValueError):
         return None
     if not callable(getattr(binary, "readline", None)):
