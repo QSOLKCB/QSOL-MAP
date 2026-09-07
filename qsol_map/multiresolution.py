@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
-from math import isqrt
+from math import gcd, isqrt
 
 from . import multiresolution_core as _core
 from .integer_checks import (
@@ -146,7 +146,28 @@ def _short_frame_energy_bound(frame_count: int, frame_index: int) -> int:
     return _PCM16_SQUARE_MAX * _SHORT_WINDOW_SQUARE_PREFIX[available]
 
 
-def _one_long_event_matches_aggregate(channel: dict) -> bool:
+def _endpoint_pair_matches_window_congruence(
+    dc: int, nyquist: int, available: int
+) -> bool:
+    """Check necessary signed endpoint congruences for the available tail."""
+    # D + N = 2 * sum(even n, w[n] * x[n])
+    # D - N = 2 * sum(odd n,  w[n] * x[n]).
+    # Each side must therefore be divisible by the gcd of the corresponding
+    # committed integer coefficients. If a parity has no available samples,
+    # its contribution must be exactly zero.
+    for parity, value in ((0, dc + nyquist), (1, dc - nyquist)):
+        divisor = 0
+        for index in range(parity, available, 2):
+            divisor = gcd(divisor, 2 * LONG_WINDOW_WEIGHTS[index])
+        if divisor:
+            if value % divisor:
+                return False
+        elif value != 0:
+            return False
+    return True
+
+
+def _one_long_event_matches_aggregate(channel: dict, frame_count: int) -> bool:
     spectral = channel["long_spectral"]
     events = spectral["events"]
     if len(events) != 1:
@@ -181,6 +202,37 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
         return False
 
     event = events[0]
+    component_by_bin = {
+        component["bin"]: component for component in event["top_components"]
+    }
+    endpoint_value_options: list[tuple[int, ...]] = []
+    for endpoint, magnitude in zip(
+        (0, len(aggregate) - 1), scaled_endpoint_magnitudes
+    ):
+        component = component_by_bin.get(endpoint)
+        if component is None:
+            endpoint_value_options.append(
+                (0,) if magnitude == 0 else (-magnitude, magnitude)
+            )
+            continue
+        real = _core._safe_decimal_int(component["real"], signed=True)
+        if real is None or real % _LONG_FFT_ENDPOINT_SCALE:
+            return False
+        signed_value = real // _LONG_FFT_ENDPOINT_SCALE
+        if abs(signed_value) != magnitude:
+            return False
+        endpoint_value_options.append((signed_value,))
+
+    available = min(
+        LONG_FRAME_SIZE, max(0, frame_count - event["sample_start"])
+    )
+    if not any(
+        _endpoint_pair_matches_window_congruence(dc, nyquist, available)
+        for dc in endpoint_value_options[0]
+        for nyquist in endpoint_value_options[1]
+    ):
+        return False
+
     expected_bins = sorted(
         range(len(aggregate)),
         key=lambda bin_index: (-aggregate[bin_index], bin_index),
@@ -220,14 +272,20 @@ def _aggregate_bins_fit_top_component_rankings(channel: dict) -> bool:
             if power is None:
                 return False
             parsed_components.append((component["bin"], power))
-        weakest = parsed_components[-1][1]
-        # Every omitted bin is at most the weakest selected top-K power. Start
-        # with that allowance for all bins, then replace selected-bin allowance
-        # with the exact selected contribution for this event.
+        weakest_bin, weakest = parsed_components[-1]
+        selected = dict(parsed_components)
+        # An omitted bin may tie the weakest selected power only if its larger
+        # bin index keeps it behind the selected cutoff under the authored
+        # descending-power/ascending-bin ordering. Earlier omitted bins need a
+        # strict integer-power cutoff or they would displace the weakest entry.
         for bin_index in range(len(maximum_by_bin)):
-            maximum_by_bin[bin_index] += weakest
-        for bin_index, power in parsed_components:
-            maximum_by_bin[bin_index] += power - weakest
+            if bin_index in selected:
+                maximum_by_bin[bin_index] += selected[bin_index]
+                continue
+            allowance = weakest - (1 if bin_index < weakest_bin else 0)
+            if allowance < 0:
+                return False
+            maximum_by_bin[bin_index] += allowance
 
     return all(
         aggregate_power <= maximum_power
@@ -473,7 +531,7 @@ def _validate_percept_core(percept: object) -> bool:
     for channel_index, channel in enumerate(percept["channels"]):
         if not _aggregate_bins_fit_top_component_rankings(channel):
             return False
-        if not _one_long_event_matches_aggregate(channel):
+        if not _one_long_event_matches_aggregate(channel, frame_count):
             return False
         for event in channel["long_spectral"]["events"]:
             sample_start = event["sample_start"]
@@ -571,14 +629,22 @@ def _validate_percept_core(percept: object) -> bool:
         if reported_delta_sum + omitted_candidate_count > positive_delta_sum:
             return False
         transition_count = max(0, short_event_count - 1)
+        strongest_reported_delta = reported_deltas[0] if reported_deltas else 0
+        if maximum_positive_delta > strongest_reported_delta:
+            unreported_transition_count = transition_count - len(reported_deltas)
+            unreported_positive_mass = positive_delta_sum - reported_delta_sum
+            if (
+                unreported_transition_count <= 0
+                or unreported_positive_mass < maximum_positive_delta
+            ):
+                return False
         if (
             transient["candidate_count"] == transition_count
             and transient["candidate_count"] == len(transient["strongest_candidates"])
         ):
-            expected_maximum = reported_deltas[0] if reported_deltas else 0
             if (
                 reported_delta_sum != positive_delta_sum
-                or maximum_positive_delta != expected_maximum
+                or maximum_positive_delta != strongest_reported_delta
             ):
                 return False
 
