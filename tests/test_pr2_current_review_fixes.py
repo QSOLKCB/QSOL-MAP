@@ -43,6 +43,24 @@ class CurrentCompactReviewFixes(unittest.TestCase):
         rehash(changed)
         self.assertFalse(mr.verify_multiresolution_envelope(changed))
 
+    def test_single_sample_energy_matches_exact_endpoint_power(self):
+        envelope = mr.build_multiresolution_percept(parse_pcm16_wav(make_wav([1])))
+        self.assertTrue(mr.verify_multiresolution_envelope(envelope))
+
+        changed = copy.deepcopy(envelope)
+        event = changed["percept"]["channels"][0]["long_spectral"]["events"][0]
+        self.assertEqual(event["windowed_energy"], "1")
+        event["windowed_energy"] = "4"
+        rehash(changed)
+        self.assertFalse(mr.verify_multiresolution_envelope(changed))
+
+        for sample in (0, -1, 1, 32767, -32768):
+            with self.subTest(sample=sample):
+                valid = mr.build_multiresolution_percept(
+                    parse_pcm16_wav(make_wav([sample]))
+                )
+                self.assertTrue(mr.verify_multiresolution_envelope(valid))
+
     def test_all_candidate_transitions_require_exact_positive_delta_sum(self):
         # The two impulses land at opposite ends of successive triangular
         # windows, producing two consecutive rises among exactly three short
@@ -63,6 +81,26 @@ class CurrentCompactReviewFixes(unittest.TestCase):
         self.assertEqual(int(transient["positive_delta_sum"]), reported_sum)
 
         transient["positive_delta_sum"] = str(reported_sum + 1)
+        rehash(changed)
+        self.assertFalse(mr.verify_multiresolution_envelope(changed))
+
+    def test_all_candidate_transitions_require_exact_maximum_positive_delta(self):
+        samples = [0] * 384
+        samples[255] = 1000
+        samples[383] = 2000
+        changed = copy.deepcopy(
+            mr.build_multiresolution_percept(parse_pcm16_wav(make_wav(samples)))
+        )
+        transient = changed["percept"]["channels"][0]["transient"]
+        candidates = transient["strongest_candidates"]
+        self.assertEqual(transient["candidate_count"], 2)
+        self.assertEqual(len(candidates), 2)
+        strongest = int(candidates[0]["positive_delta"])
+        total = int(transient["positive_delta_sum"])
+        self.assertEqual(int(transient["maximum_positive_delta"]), strongest)
+        self.assertGreater(total, strongest)
+
+        transient["maximum_positive_delta"] = str(total)
         rehash(changed)
         self.assertFalse(mr.verify_multiresolution_envelope(changed))
 
@@ -117,6 +155,28 @@ class CurrentSidecarReviewFixes(unittest.TestCase):
             self.assertTrue(sidecar.verify_spectral_sidecar(envelope, stream))
         finally:
             stream.detach()
+
+    def test_translating_stringio_sidecar_destination_is_rejected_before_write(self):
+        wave = parse_pcm16_wav(make_wav([1, -2, 3, -4] * 100))
+        envelope = mr.build_multiresolution_percept(wave)
+
+        for newline in ("\r", "\r\n"):
+            with self.subTest(newline=newline):
+                destination = io.StringIO(newline=newline)
+                with self.assertRaises(ValueError):
+                    sidecar.write_spectral_sidecar(wave, envelope, destination)
+                self.assertEqual(destination.getvalue(), "")
+
+        for newline in (None, "", "\n"):
+            with self.subTest(safe_newline=newline):
+                destination = io.StringIO(newline=newline)
+                sidecar.write_spectral_sidecar(wave, envelope, destination)
+                text = destination.getvalue()
+                self.assertNotIn("\r", text)
+                self.assertTrue(text.endswith("\n"))
+                self.assertTrue(
+                    sidecar.verify_spectral_sidecar(envelope, io.StringIO(text))
+                )
 
 
 if __name__ == "__main__":
