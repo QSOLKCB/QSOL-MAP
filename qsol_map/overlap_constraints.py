@@ -6,6 +6,7 @@ from math import isqrt
 
 
 _PCM16_MAGNITUDE_MAX = 1 << 15
+_EXACT_RESIDUAL_ENERGY_LIMIT = 1 << 16
 
 
 def _tail_squared_magnitude_options(
@@ -31,22 +32,64 @@ def _tail_squared_magnitude_options(
     return []
 
 
+def _small_residual_energy_is_realizable(
+    residual: int, weights: tuple[int, ...]
+) -> bool:
+    """Exactly solve bounded residual weighted-square feasibility.
+
+    For a small residual, only weights whose square is no larger than the
+    residual can contribute. A bitset dynamic program chooses at most one
+    squared PCM magnitude per source position. Residuals above the fixed bound
+    retain the surrounding necessary non-negativity check rather than turning
+    compact verification into an unbounded subset-sum search.
+    """
+    if residual < 0:
+        return False
+    if residual == 0:
+        return True
+    if not weights:
+        return False
+    if residual > _EXACT_RESIDUAL_ENERGY_LIMIT:
+        return True
+
+    mask = (1 << (residual + 1)) - 1
+    reachable = 1
+    root_residual = isqrt(residual)
+    for weight in weights:
+        magnitude_limit = min(_PCM16_MAGNITUDE_MAX, root_residual // weight)
+        if magnitude_limit == 0:
+            continue
+        previous = reachable
+        updated = previous
+        weight_square = weight * weight
+        for magnitude in range(1, magnitude_limit + 1):
+            contribution = weight_square * magnitude * magnitude
+            updated |= previous << contribution
+        reachable = updated & mask
+        if (reachable >> residual) & 1:
+            return True
+    return False
+
+
 def _tail_energy_fits_previous_overlap(
     previous_energy: int,
     current_energy: int,
     current_available: int,
     previous_overlap_weights: tuple[int, ...],
+    previous_nonoverlap_weights: tuple[int, ...] = (),
 ) -> bool:
     """Require one exact current-tail witness to fit the previous frame energy.
 
     Consecutive short and long frames overlap by exactly half a window. When
     the later frame has only one or two real source samples, its exact energy
     determines a bounded set of squared sample magnitudes. Those same samples
-    occur in the preceding frame at the supplied overlap weights, so their
-    contribution cannot exceed that preceding frame's declared energy.
+    occur in the preceding frame at the supplied overlap weights. For each
+    witness, the remaining previous-frame energy must be nonnegative and, for
+    small residuals, exactly realizable by the preceding non-overlap weights.
 
-    This is a necessary compact-envelope check. It does not claim to solve the
-    remaining non-overlap energy realization for a longer preceding frame.
+    This is a necessary compact-envelope check. Large residuals deliberately
+    remain a bounded necessary test; full sidecar verification reconstructs
+    the complete waveform.
     """
     if current_available not in (1, 2):
         return True
@@ -55,11 +98,14 @@ def _tail_energy_fits_previous_overlap(
     options = _tail_squared_magnitude_options(current_energy, current_available)
     if not options:
         return False
-    return any(
-        sum(
+    for squares in options:
+        overlap_contribution = sum(
             square * weight * weight
             for square, weight in zip(squares, previous_overlap_weights)
         )
-        <= previous_energy
-        for squares in options
-    )
+        residual = previous_energy - overlap_contribution
+        if _small_residual_energy_is_realizable(
+            residual, previous_nonoverlap_weights
+        ):
+            return True
+    return False
