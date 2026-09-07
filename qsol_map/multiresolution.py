@@ -371,12 +371,34 @@ def _two_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     if percept["source"]["frame_count"] != 2:
         return True
     channel_count = percept["source"]["channels"]
-    if channel_count == 1:
-        events = percept["channels"][0]["long_spectral"]["events"]
+
+    # With exactly two samples, every channel has one long event and the
+    # scaled real endpoints are D=x+2*y and N=x-2*y. Therefore
+    # D^2 + N^2 = 2 * (x^2 + 4*y^2) exactly binds the endpoint powers to the
+    # declared long windowed energy, independently of endpoint signs.
+    for channel in percept["channels"]:
+        spectral = channel["long_spectral"]
+        events = spectral["events"]
         if len(events) != 1:
             return False
-        energy = _core._safe_decimal_int(events[0]["windowed_energy"])
-        return energy is not None and _small_window_energy_is_realizable(energy, 2)
+        long_energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        if long_energy is None or not _small_window_energy_is_realizable(long_energy, 2):
+            return False
+        magnitudes: list[int] = []
+        for endpoint in (0, LONG_FRAME_SIZE // 2):
+            power = _core._safe_decimal_int(spectral["aggregate_power_by_bin"][endpoint])
+            if power is None:
+                return False
+            root = isqrt(power)
+            magnitude, remainder = divmod(root, _LONG_FFT_ENDPOINT_SCALE)
+            if root * root != power or remainder:
+                return False
+            magnitudes.append(magnitude)
+        if magnitudes[0] * magnitudes[0] + magnitudes[1] * magnitudes[1] != 2 * long_energy:
+            return False
+
+    if channel_count == 1:
+        return True
     gram = _relationship_gram_matrix(percept)
     if gram is None:
         return False
@@ -453,7 +475,8 @@ def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
         events = spectral["events"]
         if len(events) != 1:
             return False
-        energy = _core._safe_decimal_int(events[0]["windowed_energy"])
+        event = events[0]
+        energy = _core._safe_decimal_int(event["windowed_energy"])
         if energy is None or not 0 <= energy <= 14 * _PCM16_SQUARE_MAX:
             return False
         # One event makes these aggregate endpoints exact frame powers.
@@ -469,7 +492,37 @@ def _three_sample_relationships_are_integer_realizable(percept: dict) -> bool:
             if root * root != power or remainder:
                 return False
             magnitudes.append(magnitude)
-        return bool(_three_sample_window_vectors(energy, *magnitudes))
+
+        vectors = _three_sample_window_vectors(energy, *magnitudes)
+        if not vectors:
+            return False
+        component_by_bin = {
+            component["bin"]: component for component in event["top_components"]
+        }
+        required_signed_endpoints: dict[int, int] = {}
+        for endpoint, magnitude in zip((0, LONG_FRAME_SIZE // 2), magnitudes):
+            component = component_by_bin.get(endpoint)
+            if component is None:
+                continue
+            real = _core._safe_decimal_int(component["real"], signed=True)
+            if real is None or real % scale:
+                return False
+            signed_value = real // scale
+            if abs(signed_value) != magnitude:
+                return False
+            required_signed_endpoints[endpoint] = signed_value
+
+        for first, second, third in vectors:
+            signed_values = {
+                0: first + 2 * second + 3 * third,
+                LONG_FRAME_SIZE // 2: first - 2 * second + 3 * third,
+            }
+            if all(
+                signed_values[endpoint] == required
+                for endpoint, required in required_signed_endpoints.items()
+            ):
+                return True
+        return False
     gram = _relationship_gram_matrix(percept)
     if gram is None:
         return False
@@ -571,6 +624,14 @@ def _validate_percept_core(percept: object) -> bool:
                 selected_weighted_power += component["bin"] * power
             if numerator < selected_weighted_power:
                 return False
+            omitted_power_total = denominator - selected_power_total
+            if omitted_power_total < 0:
+                return False
+            if numerator > (
+                selected_weighted_power
+                + (LONG_FRAME_SIZE // 2) * omitted_power_total
+            ):
+                return False
 
             # The compact list claims to contain the strongest LONG_TOP_K bins.
             # Therefore every omitted bin is bounded by the weakest selected
@@ -617,12 +678,14 @@ def _validate_percept_core(percept: object) -> bool:
 
         reported_delta_sum = 0
         reported_deltas: list[int] = []
+        reported_frames: set[int] = set()
         for candidate in transient["strongest_candidates"]:
             positive_delta = _core._safe_decimal_int(candidate["positive_delta"])
             if positive_delta is None:
                 return False
             reported_delta_sum += positive_delta
             reported_deltas.append(positive_delta)
+            reported_frames.add(candidate["frame_index"])
         omitted_candidate_count = transient["candidate_count"] - len(
             transient["strongest_candidates"]
         )
@@ -630,14 +693,52 @@ def _validate_percept_core(percept: object) -> bool:
             return False
         transition_count = max(0, short_event_count - 1)
         strongest_reported_delta = reported_deltas[0] if reported_deltas else 0
+        unreported_positive_mass = positive_delta_sum - reported_delta_sum
+
+        # Any summary maximum stronger than the strongest reported candidate
+        # cannot belong to an omitted candidate, because that candidate would
+        # have ranked into the reported top set. It therefore requires an
+        # actually non-candidate transition plus enough unreported positive
+        # mass for one transition to attain the declared maximum.
         if maximum_positive_delta > strongest_reported_delta:
-            unreported_transition_count = transition_count - len(reported_deltas)
-            unreported_positive_mass = positive_delta_sum - reported_delta_sum
+            noncandidate_transition_count = transition_count - transient["candidate_count"]
             if (
-                unreported_transition_count <= 0
+                noncandidate_transition_count <= 0
                 or unreported_positive_mass < maximum_positive_delta
             ):
                 return False
+
+        if omitted_candidate_count > 0:
+            weakest_reported_delta = reported_deltas[-1]
+            weakest_reported_frame = transient["strongest_candidates"][-1]["frame_index"]
+            unreported_frames = [
+                frame_index
+                for frame_index in range(1, transition_count + 1)
+                if frame_index not in reported_frames
+            ]
+            candidate_allowances = [
+                weakest_reported_delta
+                - (1 if frame_index < weakest_reported_frame else 0)
+                for frame_index in unreported_frames
+            ]
+            # An omitted candidate may tie the weakest reported delta only at
+            # a later frame; an earlier equal-delta candidate would win the
+            # authored ascending-frame tie break and displace the cutoff item.
+            if sum(allowance >= 1 for allowance in candidate_allowances) < omitted_candidate_count:
+                return False
+            if transient["candidate_count"] == transition_count:
+                # When every transition is a candidate, every unreported frame
+                # is one of the omitted candidates. Their total positive mass
+                # is exact and must fit below the top-16 cutoff frame by frame.
+                if len(unreported_frames) != omitted_candidate_count:
+                    return False
+                if any(allowance < 1 for allowance in candidate_allowances):
+                    return False
+                if unreported_positive_mass > sum(candidate_allowances):
+                    return False
+                if maximum_positive_delta != strongest_reported_delta:
+                    return False
+
         if (
             transient["candidate_count"] == transition_count
             and transient["candidate_count"] == len(transient["strongest_candidates"])
