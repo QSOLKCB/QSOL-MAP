@@ -29,6 +29,8 @@ Forbidden examples:
 
 ## Canonical profile rules
 
+### Frozen v0.1
+
 For `qsol-map-fixed-fft-v0.1`:
 
 - no runtime random input;
@@ -40,7 +42,26 @@ For `qsol-map-fixed-fft-v0.1`:
 - large exact integer observations are decimal strings;
 - source, PCM, complex-matrix, power-matrix, and percept hashes remain distinct commitments.
 
-Changing any identity-bearing rule requires a new profile/version identifier and new golden vectors.
+The published v0.1 behavior and golden vectors are frozen. v0.2 must not alter them.
+
+### v0.2 multi-resolution L1
+
+For `qsol-map-multiresolution-v0.2` and `qsol-map-fixed-fft-1024-v0.2`:
+
+- preserve the frozen v0.1 short reference unchanged;
+- use the committed 1024-point Q15 twiddle/window contract for the long reference;
+- retain represented bins up to source Nyquist without psychoacoustic low-pass filtering;
+- do not infer microphone/sensor bandwidth from sample rate alone;
+- keep channels independent and never downmix implicitly;
+- transient candidates are authored deterministic L1 events, not human-onset claims;
+- a rise from zero previous energy uses `rise_ratio: null`, never a zero denominator;
+- sidecar records must be canonical NDJSON in exact deterministic order;
+- sidecar integer position fields must be plain non-Boolean integers;
+- untrusted decimal strings must be canonical and bounded before integer conversion;
+- compact percept, short matrices, long matrices, sidecar records, sidecar receipt, source and PCM commitments remain separately identified;
+- output-path collisions that would destroy a percept or sidecar must fail before writing.
+
+Changing any identity-bearing rule requires a new profile/version identifier and new golden vectors unless correcting a demonstrated implementation error before the profile is released.
 
 ## Optimization rules
 
@@ -56,6 +77,8 @@ Apply these principles:
 - benchmark the target repository before making a speedup claim;
 - never skip semantic coverage merely to reduce CI time.
 
+The v0.2 benchmark is an environment-scoped observation tool, not a CI performance gate. It must remain runnable from an ordinary repository checkout.
+
 Current CI intentionally avoids dependency installation and duplicate runtime matrices. Do not add expensive lanes without a contract reason.
 
 ## Testing
@@ -68,6 +91,8 @@ python3 -m unittest discover -s tests -v
 
 Golden-vector changes require an explicit explanation of why canonical identity changed.
 
+v0.2 changes must also preserve the frozen v0.1 golden hash.
+
 ## Learned models
 
 L2 is not implemented yet. When it is introduced:
@@ -79,4 +104,12 @@ L2 is not implemented yet. When it is introduced:
 
 ## Documentation
 
-Keep `README.md` human-readable and `README4AI.md` compact and machine-oriented. Update `ROADMAP.md`, `docs/ARCHITECTURE.md`, and `docs/CLAIM_BOUNDARIES.md` when protocol boundaries change.
+Keep `README.md` human-readable and `README4AI.md` compact and machine-oriented.
+
+When protocol boundaries change, update at minimum:
+- `README.md`;
+- `README4AI.md`;
+- `ROADMAP.md`;
+- `docs/ARCHITECTURE.md`;
+- `docs/CLAIM_BOUNDARIES.md`;
+- the relevant versioned specification.
