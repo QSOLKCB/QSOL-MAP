@@ -133,6 +133,8 @@ For a transition from zero previous energy, `rise_ratio` is `null`. A finite rat
 
 Candidate energies and summary totals are source-sized against the frozen short triangular window. If the source produces fewer than two short frames, no transition exists and both summary totals are zero. The compact verifier also accounts for omitted candidates beyond the 16 reported strongest events when checking the positive-delta summary.
 
+When more than 16 candidates exist, the reported list is the exact deterministic top-16 under descending positive delta and ascending frame index. An omitted candidate may tie the weakest reported delta only at a later frame. If every transition is a candidate, the omitted positive-delta mass must fit these cutoff allowances and the summary maximum equals the strongest reported candidate. If `maximum_positive_delta` exceeds the strongest reported candidate, it must instead be realizable by an actual non-candidate transition and enough positive-delta mass must remain outside the reported candidate set to attain it.
+
 Each reported previous/current short tail containing one sample must have energy `x^2`; a two-sample tail must have energy `x^2 + 4*y^2`, for signed PCM16 integers. The same exact energy checks cover one/two-sample long windows, including mono sources and tails of longer recordings. An energy below the maximum can still be impossible and is rejected.
 
 This is an authored deterministic signal event, not a claim of equivalence to human onset perception.
@@ -151,7 +153,9 @@ For every channel pair `i < j`, v0.2 records exact quantities including:
 
 The complete channel Gram matrix must be jointly feasible: positive semidefinite and of rank no greater than the declared source frame count. Very short sources receive additional integer-realizability checks; for two- and three-frame multichannel sources one shared PCM16 vector assignment must reproduce every declared Gram entry and each long-window energy. Three-frame checks use source energy `x^2 + y^2 + z^2` and weighted energy `x^2 + 4*y^2 + 9*z^2`, with exact signed PCM16 limits. Individually feasible diagonals or separate pairwise witnesses are not enough. Two-frame mono sources have no pairwise records, but must still admit integer PCM16 samples realizing their weighted energy.
 
-Three-frame mono sources also require a signed PCM16 triple realizing `x^2 + 4*y^2 + 9*z^2` and the same DC/Nyquist aggregate powers. The exact endpoint scale `32768^10` reduces this to at most eight candidates, so an impossible energy such as `2` cannot bypass validation merely because mono has no Gram records. This check covers the complete three-frame mono source, not three-sample tails of longer recordings or the remaining spectral/source commitments. See specification section 8.1.
+For a complete two-sample channel, the sole long-event endpoint powers also bind that weighted energy. After dividing the endpoint magnitudes by `32768^10`, `D=x+2y` and `N=x-2y`, so compact verification requires `D^2 + N^2 = 2*windowed_energy`.
+
+Three-frame mono sources also require a signed PCM16 triple realizing `x^2 + 4*y^2 + 9*z^2` and the same DC/Nyquist aggregate powers. The exact endpoint scale `32768^10` reduces this to at most eight candidates, so an impossible energy such as `2` cannot bypass validation merely because mono has no Gram records. If DC or Nyquist is present in `top_components`, the accepted triple must reproduce that endpoint's reported signed scaled `real` value; only omitted endpoints remain sign-unspecified. This check covers the complete three-frame mono source, not three-sample tails of longer recordings or the remaining spectral/source commitments. See specification section 8.1.
 
 These are signal relationships. They are not speaker geometry, direction-of-arrival, or subjective stereo-width measurements.
 
@@ -263,7 +267,13 @@ The verification path also rejects Boolean values where canonical schemas requir
 
 For a channel with one long event, every aggregate power is a single integer complex power, even when its bin is omitted from the selected components. The compact verifier rejects impossible two-square residues and odd valuations of the fixed small primes listed in specification section 5; endpoint powers must additionally be perfect squares whose square roots are divisible by `32768^10`. This endpoint rule applies to every single-event channel, regardless of source length or channel count, and permits zero. These are bounded necessary checks, not a complete large-integer factorization proof. They do not impose the single-row restriction on aggregates summed over multiple events.
 
-For every channel, a bin selected in all long events must have aggregate power exactly equal to its summed selected powers, including zero-power selections. Only bins omitted from at least one event may have aggregate power greater than that reported subtotal. Recomputing the region, centroid and percept totals does not waive this equality.
+When a one-event DC or Nyquist component is reported, its sign is part of the compact evidence. After division by `32768^10`, the signed pair must satisfy the source-tail long-window congruences `D+N = 2*sum(even-index w*x)` and `D-N = 2*sum(odd-index w*x)`. An endpoint omitted from the top components supplies only a magnitude and remains free to use either sign as a witness.
+
+For every channel, a bin selected in all long events must have aggregate power exactly equal to its summed selected powers, including zero-power selections. Only bins omitted from at least one event may have aggregate power greater than that reported subtotal. Per-event top-K upper bounds also respect the descending-power/ascending-bin tie break: an omitted bin before the weakest selected bin must have strictly lower power, while a later omitted bin may tie. Recomputing the region, centroid and percept totals does not waive these constraints.
+
+Every event centroid is constrained by the same selected/omitted split. If `S` is selected power, `K` selected weighted power, `D` the denominator and `N` the numerator, then `K <= N <= K + 512*(D-S)`. The opposite upper bound prevents aggregate-preserving shifts between events from inventing an impossible individual centroid.
+
+Transient compact verification preserves not only minimum omitted-candidate mass but the deterministic candidate cutoff. The reported 16 are the descending-delta/ascending-frame prefix; equal cutoff deltas are allowed only at later frames. A declared maximum stronger than the strongest reported candidate must come from a non-candidate transition with enough unreported positive mass to attain it. When all transitions are candidates, the exact omitted mass must fit the cutoff allowances and the maximum is the strongest reported candidate.
 
 Source-sized PCM/window energy bounds, exact short-source integer feasibility, transform-power bounds, transient-summary constraints, and exact channel Gram-rank feasibility reject contradictory compact observations even when outer hashes are recomputed. These necessary checks are not a complete compact-only integer feasibility proof for arbitrary source lengths; full sidecar verification separately reconstructs and binds the actual PCM evidence.
 
@@ -301,7 +311,10 @@ Coverage includes:
 - exact and jointly feasible channel relationships;
 - joint three-frame Gram and window-energy feasibility, including a case with separate pairwise witnesses but no shared assignment;
 - omitted single-event powers, exhaustive small-integer checks and preservation of multi-event aggregates;
-- one/two-sample mono and tail energy feasibility, including signed PCM16 limits;
+- one/two-sample mono and tail energy feasibility, including endpoint-energy binding and signed PCM16 limits;
+- signed endpoint congruence and three-sample reported-sign witness checks;
+- per-event top-K tie cutoffs and centroid upper/lower feasibility bounds;
+- truncated transient top-16 ordering and unreported-maximum feasibility;
 - malformed/oversized verifier input;
 - sidecar round-trip and reconstructed-evidence tamper rejection;
 - Boolean sidecar position rejection even after receipt recomputation;
