@@ -39,9 +39,12 @@ class LatestCompactContractTests(unittest.TestCase):
     def test_omitted_candidate_must_rank_below_reported_top16_cutoff(self):
         # E_i = 4^i makes all 17 transitions candidates with deltas
         # 3*4^(i-1). The authored top 16 are therefore frames 17..2.
+        # Use a nonzero source so the separate exact all-zero long/short
+        # cross-resolution invariant does not intentionally reject this
+        # synthetic transient-only ranking fixture before the cutoff logic.
         changed = copy.deepcopy(
             mr.build_multiresolution_percept(
-                parse_pcm16_wav(make_wav([0] * 2304))
+                parse_pcm16_wav(make_wav([1] * 2304))
             )
         )
         transient = changed["percept"]["channels"][0]["transient"]
