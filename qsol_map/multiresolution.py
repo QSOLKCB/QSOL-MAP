@@ -216,6 +216,42 @@ def _one_sample_relationship_signs_match_endpoints(percept: dict) -> bool:
     return True
 
 
+def _reported_transient_energy_state(
+    transient: dict,
+) -> tuple[dict[int, int], set[int]] | None:
+    """Collect short-frame energies fixed by the reported candidate records."""
+    known_energy: dict[int, int] = {}
+    reported_frames: set[int] = set()
+    for candidate in transient["strongest_candidates"]:
+        frame = candidate["frame_index"]
+        previous = _core._safe_decimal_int(candidate["previous_energy"])
+        current = _core._safe_decimal_int(candidate["current_energy"])
+        if previous is None or current is None:
+            return None
+        reported_frames.add(frame)
+        for energy_frame, value in ((frame - 1, previous), (frame, current)):
+            existing = known_energy.get(energy_frame)
+            if existing is not None and existing != value:
+                return None
+            known_energy[energy_frame] = value
+    return known_energy, reported_frames
+
+
+def _short_energy_is_source_feasible(
+    frame_count: int, energy_frame: int, energy: int
+) -> bool:
+    """Check one short-frame energy against source bounds and exact tiny tails."""
+    if energy < 0:
+        return False
+    if energy > _base._short_frame_energy_bound(frame_count, energy_frame):
+        return False
+    available = min(
+        SHORT_FRAME_SIZE,
+        max(0, frame_count - energy_frame * SHORT_HOP_SIZE),
+    )
+    return _base._small_window_energy_is_realizable(energy, available)
+
+
 def _noncandidate_positive_delta_bound(frame_count: int, frame_index: int) -> int:
     """Return a necessary maximum delta for a transition that is not a candidate.
 
@@ -229,6 +265,74 @@ def _noncandidate_positive_delta_bound(frame_count: int, frame_index: int) -> in
     if previous_max <= 0 or current_max <= 0:
         return 0
     return min((previous_max - 1) // 2, (current_max - 1) // 3)
+
+
+def _transition_can_realize_noncandidate_delta(
+    frame_count: int,
+    frame_index: int,
+    delta: int,
+    known_energy: dict[int, int],
+) -> bool:
+    """Honor reported neighboring energies when placing a non-candidate rise."""
+    if delta <= 0:
+        return False
+    previous = known_energy.get(frame_index - 1)
+    current = known_energy.get(frame_index)
+
+    if previous is not None and current is not None:
+        return (
+            current - previous == delta
+            and current > previous
+            and 2 * current < 3 * previous
+        )
+    if previous is not None:
+        current = previous + delta
+        return (
+            _short_energy_is_source_feasible(frame_count, frame_index, current)
+            and 2 * current < 3 * previous
+        )
+    if current is not None:
+        previous = current - delta
+        return (
+            _short_energy_is_source_feasible(frame_count, frame_index - 1, previous)
+            and current > previous
+            and 2 * current < 3 * previous
+        )
+    return _noncandidate_positive_delta_bound(frame_count, frame_index) >= delta
+
+
+def _minimum_candidate_delta_from_known_energies(
+    frame_count: int,
+    frame_index: int,
+    known_energy: dict[int, int],
+) -> int | None:
+    """Return a necessary omitted-candidate delta from any reported neighbors."""
+    previous = known_energy.get(frame_index - 1)
+    current = known_energy.get(frame_index)
+
+    if previous is not None and current is not None:
+        if current <= previous or 2 * current < 3 * previous:
+            return None
+        return current - previous
+    if previous is not None:
+        minimum = max(1, (previous + 1) // 2)
+        if previous + minimum > _base._short_frame_energy_bound(
+            frame_count, frame_index
+        ):
+            return None
+        return minimum
+    if current is not None:
+        if current <= 0:
+            return None
+        previous_cap = min(
+            _base._short_frame_energy_bound(frame_count, frame_index - 1),
+            current - 1,
+            (2 * current) // 3,
+        )
+        if previous_cap < 0:
+            return None
+        return current - previous_cap
+    return 1
 
 
 def _transient_noncandidate_maximum_is_feasible(percept: dict) -> bool:
@@ -245,14 +349,12 @@ def _transient_noncandidate_maximum_is_feasible(percept: dict) -> bool:
             return False
         reported = transient["strongest_candidates"]
         strongest_reported = 0
-        reported_frames: set[int] = set()
         if reported:
             strongest_reported = _core._safe_decimal_int(
                 reported[0]["positive_delta"]
             )
             if strongest_reported is None:
                 return False
-            reported_frames = {item["frame_index"] for item in reported}
 
         if maximum <= strongest_reported:
             continue
@@ -260,10 +362,15 @@ def _transient_noncandidate_maximum_is_feasible(percept: dict) -> bool:
         if noncandidate_count <= 0:
             return False
 
+        state = _reported_transient_energy_state(transient)
+        if state is None:
+            return False
+        known_energy, reported_frames = state
         if not any(
             frame_index not in reported_frames
-            and _noncandidate_positive_delta_bound(frame_count, frame_index)
-            >= maximum
+            and _transition_can_realize_noncandidate_delta(
+                frame_count, frame_index, maximum, known_energy
+            )
             for frame_index in range(1, transition_count + 1)
         ):
             return False
@@ -271,7 +378,7 @@ def _transient_noncandidate_maximum_is_feasible(percept: dict) -> bool:
 
 
 def _omitted_candidate_adjacency_is_feasible(percept: dict) -> bool:
-    """Use reported neighboring frame energies to bound omitted candidates."""
+    """Use reported neighboring energies to place omitted candidates exactly."""
     frame_count = percept["source"]["frame_count"]
     short_event_count = (
         frame_count + SHORT_HOP_SIZE - 1
@@ -282,70 +389,54 @@ def _omitted_candidate_adjacency_is_feasible(percept: dict) -> bool:
         transient = channel["transient"]
         reported = transient["strongest_candidates"]
         omitted_count = transient["candidate_count"] - len(reported)
-        if omitted_count <= 0 or transient["candidate_count"] != transition_count:
+        if omitted_count <= 0:
             continue
+        if not reported:
+            return False
 
-        known_energy: dict[int, int] = {}
-        reported_frames: set[int] = set()
-        for candidate in reported:
-            frame = candidate["frame_index"]
-            previous = _core._safe_decimal_int(candidate["previous_energy"])
-            current = _core._safe_decimal_int(candidate["current_energy"])
-            if previous is None or current is None:
-                return False
-            reported_frames.add(frame)
-            for energy_frame, value in ((frame - 1, previous), (frame, current)):
-                existing = known_energy.get(energy_frame)
-                if existing is not None and existing != value:
-                    return False
-                known_energy[energy_frame] = value
-
+        state = _reported_transient_energy_state(transient)
+        if state is None:
+            return False
+        known_energy, reported_frames = state
         unreported_frames = [
             frame for frame in range(1, transition_count + 1)
             if frame not in reported_frames
         ]
-        if len(unreported_frames) != omitted_count or not reported:
+        if len(unreported_frames) < omitted_count:
             return False
 
         weakest_delta = _core._safe_decimal_int(reported[-1]["positive_delta"])
         weakest_frame = reported[-1]["frame_index"]
         positive_sum = _core._safe_decimal_int(transient["positive_delta_sum"])
-        reported_sum = sum(
-            _core._safe_decimal_int(item["positive_delta"]) or 0
+        reported_deltas = [
+            _core._safe_decimal_int(item["positive_delta"])
             for item in reported
-        )
-        if weakest_delta is None or positive_sum is None:
+        ]
+        if (
+            weakest_delta is None
+            or positive_sum is None
+            or any(delta is None for delta in reported_deltas)
+        ):
             return False
+        reported_sum = sum(delta for delta in reported_deltas if delta is not None)
         unreported_mass = positive_sum - reported_sum
+        if unreported_mass < 0:
+            return False
 
-        minimum_mass = 0
+        eligible_minima: list[int] = []
         for frame in unreported_frames:
             allowance = weakest_delta - (1 if frame < weakest_frame else 0)
-            previous = known_energy.get(frame - 1)
-            current = known_energy.get(frame)
+            minimum = _minimum_candidate_delta_from_known_energies(
+                frame_count, frame, known_energy
+            )
+            if minimum is not None and 1 <= minimum <= allowance:
+                eligible_minima.append(minimum)
 
-            if previous is not None and current is not None:
-                if current <= previous or 2 * current < 3 * previous:
-                    return False
-                minimum = current - previous
-            elif previous is not None:
-                minimum = (previous + 1) // 2
-                if previous + minimum > _base._short_frame_energy_bound(
-                    frame_count, frame
-                ):
-                    return False
-            elif current is not None:
-                if current <= 0:
-                    return False
-                minimum = current - (2 * current) // 3
-            else:
-                minimum = 1
-
-            if minimum < 1 or minimum > allowance:
-                return False
-            minimum_mass += minimum
-
-        if minimum_mass > unreported_mass:
+        # Mixed candidate/non-candidate sets still have to contain enough
+        # unreported frames that can actually be the claimed omitted candidates.
+        if len(eligible_minima) < omitted_count:
+            return False
+        if sum(sorted(eligible_minima)[:omitted_count]) > unreported_mass:
             return False
     return True
 
