@@ -168,10 +168,17 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
     # one event, aggregate endpoints are exact frame powers, even when omitted
     # from top_components. Multiple-event aggregates are sums of squares and
     # must not be subjected to this single-coefficient square-root condition.
+    scaled_endpoint_magnitudes: list[int] = []
     for endpoint in (0, len(aggregate) - 1):
         magnitude = isqrt(aggregate[endpoint])
         if magnitude * magnitude != aggregate[endpoint] or magnitude % _LONG_FFT_ENDPOINT_SCALE:
             return False
+        scaled_endpoint_magnitudes.append(magnitude // _LONG_FFT_ENDPOINT_SCALE)
+    # DC and Nyquist are |sum(w*x)| and |sum((-1)^n*w*x)|. Their difference
+    # before taking absolute values is even, and absolute value preserves
+    # parity, so the two scaled magnitudes must have matching parity.
+    if (scaled_endpoint_magnitudes[0] - scaled_endpoint_magnitudes[1]) % 2:
+        return False
 
     event = events[0]
     expected_bins = sorted(
@@ -190,6 +197,42 @@ def _one_long_event_matches_aggregate(channel: dict) -> bool:
         key=lambda bin_index: (aggregate[bin_index], -bin_index),
     )
     return event["dominant_non_dc_bin"] == expected_dominant
+
+
+def _aggregate_bins_fit_top_component_rankings(channel: dict) -> bool:
+    """Upper-bound every aggregate bin using each event's top-K cutoff."""
+    spectral = channel["long_spectral"]
+    aggregate: list[int] = []
+    for value in spectral["aggregate_power_by_bin"]:
+        parsed = _core._safe_decimal_int(value)
+        if parsed is None:
+            return False
+        aggregate.append(parsed)
+
+    maximum_by_bin = [0] * len(aggregate)
+    for event in spectral["events"]:
+        components = event["top_components"]
+        if not components:
+            return False
+        parsed_components: list[tuple[int, int]] = []
+        for component in components:
+            power = _core._safe_decimal_int(component["power"])
+            if power is None:
+                return False
+            parsed_components.append((component["bin"], power))
+        weakest = parsed_components[-1][1]
+        # Every omitted bin is at most the weakest selected top-K power. Start
+        # with that allowance for all bins, then replace selected-bin allowance
+        # with the exact selected contribution for this event.
+        for bin_index in range(len(maximum_by_bin)):
+            maximum_by_bin[bin_index] += weakest
+        for bin_index, power in parsed_components:
+            maximum_by_bin[bin_index] += power - weakest
+
+    return all(
+        aggregate_power <= maximum_power
+        for aggregate_power, maximum_power in zip(aggregate, maximum_by_bin)
+    )
 
 
 def _single_sample_relationships_are_integer_realizable(percept: dict) -> bool:
@@ -419,6 +462,8 @@ def _validate_percept_core(percept: object) -> bool:
             return False
 
     for channel_index, channel in enumerate(percept["channels"]):
+        if not _aggregate_bins_fit_top_component_rankings(channel):
+            return False
         if not _one_long_event_matches_aggregate(channel):
             return False
         for event in channel["long_spectral"]["events"]:
@@ -513,6 +558,13 @@ def _validate_percept_core(percept: object) -> bool:
             transient["strongest_candidates"]
         )
         if reported_delta_sum + omitted_candidate_count > positive_delta_sum:
+            return False
+        transition_count = max(0, short_event_count - 1)
+        if (
+            transient["candidate_count"] == transition_count
+            and transient["candidate_count"] == len(transient["strongest_candidates"])
+            and reported_delta_sum != positive_delta_sum
+        ):
             return False
 
         for candidate in transient["strongest_candidates"]:
