@@ -78,7 +78,7 @@ class OmittedPowerTests(unittest.TestCase):
     def test_single_row_constraint_is_not_applied_to_multi_event_aggregates(self):
         # A multi-event aggregate is a sum of more than two integer squares.
         channel = {"long_spectral": {"events": [{}, {}], "aggregate_power_by_bin": ["3"]}}
-        self.assertTrue(mr._one_long_event_matches_aggregate(channel))
+        self.assertTrue(mr._one_long_event_matches_aggregate(channel, 700))
         wave = parse_pcm16_wav(make_wav([((i * 29) % 503) - 251 for i in range(700)]))
         self.assertTrue(mr.verify_multiresolution_envelope(mr.build_multiresolution_percept(wave)))
 
