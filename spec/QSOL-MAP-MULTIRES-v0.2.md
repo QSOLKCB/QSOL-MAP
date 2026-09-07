@@ -204,45 +204,27 @@ def long_fft_reference(windowed, quarter):
 
 An impulse with `xw[0] = 1` and all other entries zero produces `(32768^10, 0)` at every retained bin. This scaling is part of the profile. An ordinary normalized or floating-point FFT is not a substitute for this algorithm, even if it uses the same twiddle table.
 
-### 4.2 Normative single-event per-bin coefficient divisors
+### 4.2 Normative per-bin coefficient divisors and event sums
 
-The exact integer butterfly matrix implies divisibility constraints at every retained output bin, not only DC, Nyquist, or bin 256. Independent compact verifiers MUST derive the guaranteed **per-bin coefficient divisors** from the same frozen transform using the following integer-divisor propagation rules.
+The integer butterfly matrix implies guaranteed **per-bin coefficient divisors** at every retained output bin. Independent compact verifiers MUST derive them from the frozen transform, not an ad hoc list of special bins.
 
-Represent an integer expression by a nonnegative divisor `d` that is guaranteed to divide every value of that expression for arbitrary integer input samples. Use `d = 0` for an expression that is identically zero.
-
-Initialization before the first FFT stage:
-
-```text
-real divisor of every bit-reversed input = 1
-imag divisor of every bit-reversed input = 0
-```
-
-For exact multiplication by an integer factor `a`:
+Represent an expression by a nonnegative divisor `d` guaranteed to divide every value for arbitrary integer real input. Divisor zero denotes an identically zero expression. Initialize every bit-reversed input with real divisor 1 and imaginary divisor 0. Propagate through the exact stage/base/offset schedule of section 4.1:
 
 ```text
 scale(d, a) = 0                  if d == 0 or a == 0
 scale(d, a) = d * abs(a)         otherwise
-```
 
-For an exact sum or difference of two integer expressions with divisors `d1` and `d2`:
-
-```text
 divisor(sum_or_difference) = gcd(d1, d2)
-```
 
-For every butterfly in section 4.1, propagate divisors in the same stage/base/offset order. If `(ur, ui)` and `(vr, vi)` are the input component divisors and `(wr, wi)` is the exact integer twiddle pair, then:
-
-```text
 tr_div = gcd(scale(vr, wr), scale(vi, wi))
 ti_div = gcd(scale(vr, wi), scale(vi, wr))
-
 out_real_div = gcd(scale(ur, 32768), tr_div)
 out_imag_div = gcd(scale(ui, 32768), ti_div)
 ```
 
-Both the left and right butterfly outputs inherit the same pair `(out_real_div, out_imag_div)` because addition versus subtraction does not change the gcd guarantee. After all ten stages, retain the first 513 divisor pairs in natural bin order. Call them `D_real[k]` and `D_imag[k]`.
+Here `(ur,ui)` and `(vr,vi)` are input component divisors and `(wr,wi)` is the committed integer twiddle. Both butterfly outputs inherit the same divisor pair. Retain the first 513 pairs as `D_real[k]` and `D_imag[k]`.
 
-For a channel with exactly one long event, every reported `top_components` entry at retained bin `k` MUST satisfy:
+Every reported component in **every long event**, including a channel with multiple events, MUST satisfy:
 
 ```text
 D_real[k] == 0  implies real == 0
@@ -251,17 +233,26 @@ D_imag[k] == 0  implies imag == 0
 D_imag[k] != 0  implies imag mod D_imag[k] == 0
 ```
 
-Because the aggregate row equals that one event's exact power row, the single-event aggregate power MUST additionally satisfy:
+Define the corresponding power and sum divisors:
 
 ```text
-power mod gcd(D_real[k]^2, D_imag[k]^2) == 0
+g[k] = gcd(D_real[k]^2, D_imag[k]^2)
+g_total = gcd(g[0], ..., g[512])
+g_moment = gcd(0*g[0], 1*g[1], ..., 512*g[512])
 ```
 
-when that gcd is nonzero; if both component divisors are zero, the power must be zero. This rule applies whether or not bin `k` is present in `top_components`.
+Each aggregate power MUST be divisible by `g[k]`, including **multi-event aggregates**, because every summand has that divisor. This applies to omitted as well as reported bins. A zero divisor requires a zero value.
 
-Examples include the existing endpoint/bin-256 scale constraints and non-special bins. In particular, the derived real and imaginary divisors at bin 8 are each divisible by `2^78`, so a single-event bin-8 power must be divisible by `2^156`. A reported `(real=1, imag=0, power=1)` at bin 8 is therefore impossible even if other compact totals and the outer digest are recomputed.
+Each individual event's centroid denominator is `sum(P[k])` and its numerator is `sum(k*P[k])`. Therefore compact acceptance MUST require:
 
-These are necessary single-row transform constraints. They MUST NOT be applied directly to `aggregate_power_by_bin` when a channel has multiple long events, because such aggregates are sums of multiple row powers.
+```text
+denominator mod g_total == 0
+numerator mod g_moment == 0
+```
+
+with the same zero-divisor convention. Under the frozen table, `g_total = 2^64`. Transferring one unit between event totals does not preserve this rule even if the channel aggregate is unchanged. Bin 8's real and imaginary divisors include `2^78`, so its power divisor includes `2^156`; DC, Nyquist and bin 256 include the existing exact scale constraints.
+
+Divisibility is closed under summation. It MUST be enforced on multi-event sums. In contrast, the perfect-square endpoint and bounded two-square conditions in section 5 describe one row and MUST NOT be imposed on multi-event aggregate powers. A sum of endpoint squares need not itself be square. These necessary conditions do not establish complete FFT-row or waveform realizability.
 
 ## 5. Long-window observations
 
@@ -274,58 +265,80 @@ For each channel and long frame, v0.2 records:
 - the eight highest-power components, ranked by descending power then ascending bin;
 - real, imaginary and power values for each retained component.
 
-For a long frame with `a` source samples available before zero padding, exact PCM16 input requires:
+For `a` available source samples before zero padding, require:
 
 ```text
 windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
 ```
 
-When `a = 1`, the energy must additionally equal `x^2` for a signed PCM16 integer `x`. When `a = 2`, it must equal `x^2 + 4*y^2` for signed PCM16 integers `x` and `y`. These exact feasibility checks apply to every channel, including mono sources, and to one- or two-sample tails of longer sources. An upper bound alone does not permit an unattainable integer energy. For longer windows these checks do not claim to solve the full integer realizability problem; full sidecar verification separately reconstructs and binds the actual samples.
+For `a=1`, the energy must be a signed PCM16 square `x^2`; for `a=2`, it must be `x^2+4*y^2`. These rules apply to mono and multichannel sources and tails. Bounds on longer windows are necessary constraints, not a complete integer-realizability proof.
 
-For a **complete two-sample source**, the sole long event also binds that energy to its exact endpoints. After removing the fixed scale `s = 32768^10`, the signed real endpoints are `D = x + 2*y` and `N = x - 2*y`, hence:
+For a **complete two-sample source**, the sole event's scaled signed endpoints satisfy:
 
 ```text
+s = 32768^10
+D = x + 2*y
+N = x - 2*y
 D^2 + N^2 = 2 * windowed_energy
+x = (D + N) / 2
+y = (D - N) / 4
 ```
 
-Because the identity uses squares, it can be checked from the endpoint aggregate powers even when an endpoint is omitted from `top_components`. It applies per channel and prevents a separately realizable energy from contradicting the exact single-event spectrum.
+Both divisions must be exact, `x,y` must lie in `[-32768,32767]`, and the same witness must satisfy weighted energy and every reported endpoint sign. An omitted endpoint permits either sign of its observed magnitude. A multichannel source must use these same candidates for one joint Gram assignment, not a separate energy-only witness.
 
-For a channel with exactly one long event, `aggregate_power_by_bin` is its exact power row. Every entry, including omitted interior bins, must satisfy the section 4.2 **per-bin coefficient divisors** and must be a sum of two integer squares; DC and Nyquist must additionally be perfect squares whose nonnegative square roots are divisible by the frozen ten-stage coefficient scale `32768^10`. This endpoint scale requirement applies to every single-event channel, regardless of source length or channel count, not only the three-frame mono case in section 8.1. Zero is allowed. The compact verifier also applies these bounded necessary checks to each nonzero entry: remove all powers of two and require the remaining odd part to be 1 modulo 4; require an even exponent of each prime in the fixed set `{3, 7, 11, 19, 23, 31}`. These checks reject impossible powers such as 3, 6, 12, and 21 without attempting unbounded factorization of large FFT integers. Passing them is not a complete two-square factorization proof or proof of a realizable FFT row. The single-row restriction does not apply to aggregates over multiple events, which sum more than two squares. In particular, a multi-event endpoint aggregate need not itself be a perfect square. Full sidecar verification checks the actual integer coefficients.
+For exactly one long event, the aggregate equals its exact power row. Every bin, including omitted bins, obeys section 4.2 and must represent an integer complex power. The bounded necessary two-square filter removes powers of two from each nonzero power, requires odd part 1 modulo 4, and requires even valuations at `{3,7,11,19,23,31}`. DC and Nyquist additionally require perfect squares with square roots divisible by `32768^10`, regardless of source length or channel count. Zero is allowed. These checks reject values such as 3, 6, 12 and 21 without unbounded factorization. They are not a complete two-square existence proof. Only these single-row square conditions, not section 4.2 divisibility, are excluded from multi-event aggregates.
 
-For a single event, define scaled signed endpoint values `D` and `N` whenever the corresponding DC/Nyquist components are reported. A reported endpoint keeps the sign of its `real` coefficient after exact division by `32768^10`; an endpoint omitted from `top_components` supplies only its magnitude and either sign may serve as a compact witness. For `a` available samples the committed window requires:
+The reported top-component list for a single-event channel must match the aggregate row's descending-power/ascending-bin top eight exactly, and the dominant non-DC bin must match that row. For every event, component power equals `real^2+imag^2`; DC/Nyquist imaginary components are zero. Energy is zero exactly when total spectral power is zero. Total retained power is bounded by the finite transform gain `(2*max(32768^2,max_k(C[k]^2+S[k]^2)))^10` times windowed energy.
+
+For a single event, divide endpoint roots by `s=32768^10` to obtain magnitudes. A reported endpoint keeps its signed scaled real value; only omitted endpoints remain sign-unspecified. For an allowed signed pair:
 
 ```text
 D + N = 2 * sum(w[n] * x[n] for even n < a)
 D - N = 2 * sum(w[n] * x[n] for odd  n < a)
 ```
 
-The compact verifier therefore requires exact divisibility of `D+N` and `D-N` by the gcd of the corresponding available integer coefficients `2*w[n]`; when one parity has no available samples, its corresponding sum or difference must be exactly zero. These are necessary signed window congruences. They preserve reported endpoint signs without inventing signs for omitted endpoints.
+Each side must be divisible by the gcd of its available coefficients `2*w[n]`; an empty parity requires exact zero. Both endpoint magnitudes and windowed energy have the same parity. Each endpoint magnitude `M` also obeys `M^2<=a*windowed_energy`. Equality forces the complete windowed vector to be constant for DC or alternating-constant for Nyquist. The signed endpoint must divide exactly by `a`; the forced vector must divide by every committed weight into signed PCM16 samples and reproduce the energy and both endpoint observations, including reported signs. Independent congruence witnesses cannot replace that equality witness.
 
-For each channel and bin `k`, let `A[k]` be the aggregate power, `S[k]` the sum of powers reported for that bin in `top_components`, `C[k]` the number of long events selecting it, and `E` the total number of long events. Per-event selected bins must be unique. Count every selection, including a zero-power component. Compact verification requires:
+For each channel/bin, let `A[k]` be aggregate power, `S[k]` the selected-power subtotal, `C[k]` the number of selecting events and `E` the event count. Per-event selected bins are unique; zero-power selections count. Require:
 
 ```text
 S[k] <= A[k]
 C[k] == E implies S[k] == A[k]
 ```
 
-When every event selects the bin, no omitted row can contribute additional power to that bin. Only bins omitted from at least one event may have an aggregate greater than the selected subtotal. Recomputed region, centroid and percept totals do not waive this exact equality. These are consistency constraints on supplied observations, not reconstruction of all omitted coefficients.
-
-Per-event upper bounds must also respect the authored top-K tie break. Let `(b_w, p_w)` be the weakest selected component in an event under descending power then ascending bin. For an omitted bin `b`:
+For the weakest selected component `(b_w,p_w)` in an event, omitted bins obey:
 
 ```text
-b < b_w  implies omitted_power[b] <= p_w - 1
-b > b_w  implies omitted_power[b] <= p_w
+b < b_w implies omitted_power[b] <= p_w - 1
+b > b_w implies omitted_power[b] <= p_w
 ```
 
-The strict integer cutoff for an earlier bin is required because an equal-power earlier bin would have displaced `b_w` in the authored ranking. Selected bins contribute their exact reported power.
+An earlier tied bin would have displaced the cutoff component. Selected bins contribute exactly their reported powers. Each aggregate also fits the sum of these selected contributions and omitted-bin caps across events.
 
-Each event centroid has a corresponding selected/omitted feasibility interval. Let `D` be the centroid denominator, `N` its numerator, `S` the sum of selected powers, and `K` the sum of `bin * power` over selected components. Then:
+### 5.1 Joint residual-power allocation
+
+Independent bin caps are insufficient. Subtract each event's selected powers from its denominator to obtain row residual `r[e]`, and each bin's selected subtotal from its aggregate to obtain column residual `c[k]`. All residuals are nonnegative and their grand totals agree. There MUST exist a nonnegative integer matrix `z[e,k]` such that:
+
+```text
+sum_k z[e,k] = r[e]
+sum_e z[e,k] = c[k]
+z[e,k] = 0                         when event e selects bin k
+z[e,k] <= p_w - (1 if k < b_w else 0) otherwise
+```
+
+This is an integer max-flow feasibility condition: source-to-event capacities `r[e]`, omitted event-to-bin capacities given above, and bin-to-sink capacities `c[k]`; acceptance requires flow equal to the total residual. Zero rows/columns may be omitted. This condition does not require each allocated cell to be an actual complex power, enforce per-cell transform divisibility, or reconstruct a waveform. The separate aggregate/component/event divisibility checks remain mandatory.
+
+For each event, let `D` be denominator, `N` numerator, `S` selected total power and `K` selected weighted power. Require:
 
 ```text
 K <= N <= K + 512 * (D - S)
+sum(event denominators) = sum(aggregate powers)
+sum(event numerators) = sum(k * aggregate[k])
 ```
 
-The lower bound is the selected contribution itself. The upper bound assigns every unit of omitted nonnegative power to the largest retained bin, 512. This is a necessary per-event constraint even when aggregate centroid totals across events remain unchanged.
+The upper bound assigns omitted power to bin 512. These moment bounds remain necessary checks, not a claim that the residual max-flow also realizes every individual event moment.
+
+For multichannel sources, each event energy is at most its channel's source energy times the maximum long weight squared, and the sum of covering event energies is at least the full-source energy. Adjacent events with a one/two-sample later tail must admit a common squared-sample witness whose preceding overlap contribution fits the previous energy. The remaining preceding non-overlap energy must be nonnegative; residuals up to 65536 additionally receive exact weighted-square feasibility over weights 1..512. Larger residuals do not receive a complete compact realizability proof.
 
 The complete complex and power matrices are committed separately with:
 
@@ -338,15 +351,9 @@ using the same length-prefixed canonical-row construction as v0.1.
 
 ## 6. Frequency support and high sample rates
 
-For sample rate `f_s`, bin `k` represents the exact rational frequency:
+For sample rate `f_s`, bin `k` represents the exact rational frequency `k*f_s/1024`. The packet records Nyquist as `f_s/2` and does not infer hardware bandwidth from sample rate.
 
-```text
-k * f_s / 1024
-```
-
-The packet records Nyquist as `f_s / 2` and does not infer hardware bandwidth from sample rate.
-
-Aggregate long-window power is additionally grouped by authored reference regions:
+Aggregate power is grouped, by actual bin centres, into authored regions:
 
 ```text
 [0, 20 kHz)
@@ -354,17 +361,11 @@ Aggregate long-window power is additionally grouped by authored reference region
 [40 kHz, Nyquist]
 ```
 
-when those bin centres exist in the represented discrete-time band.
-
-These boundaries are observation labels, not claims that 20 kHz is a universal biological hearing cutoff. v0.2 deliberately applies no psychoacoustic low-pass filter. If the supplied digital source contains represented energy above 20 kHz, the reference analysis retains it up to the source Nyquist limit.
-
-A high sample rate does **not** prove that the recording hardware captured physically valid ultrasonic energy.
+Each subtotal is derived from the corresponding aggregate bins, not just their grand total. These labels do not establish a universal biological hearing cutoff. No psychoacoustic low-pass filter is applied. Represented energy above 20 kHz is retained up to Nyquist; a high sample rate does not prove physically valid ultrasonic capture.
 
 ## 7. Deterministic transient candidates
 
-Transient candidates are derived from consecutive **v0.1 short-window energies**.
-
-A frame `i` is a candidate when:
+Candidates derive from consecutive **frozen v0.1 short-window energies** using:
 
 ```text
 current > previous
@@ -372,305 +373,182 @@ and
 2 * current >= 3 * previous
 ```
 
-The rule identifier is:
+The rule identifier is `energy-rise-3-over-2-v0.2`. The compact packet records candidate count, total positive delta, maximum positive delta, and exactly `min(16,candidate_count)` strongest candidates, ranked by descending delta then ascending frame index. Each candidate records short-frame index, sample start, previous/current energies, exact positive delta and `rise_ratio`.
+
+Every candidate energy obeys its source-sized PCM16 short-window maximum and its exact one/two-sample-tail energy feasibility. Candidate records describing the same short frame must agree on its energy. A one/two-sample current tail must also have a squared-sample witness compatible with its previous frame's overlap contribution, with nonnegative remainder and exact weighted-square residual feasibility through 65536 over the short non-overlap weights 1..128.
+
+Let `T=max(0,short_event_count-1)`, `Psum=positive_delta_sum`, `M=maximum_positive_delta`, and `Rsum` the sum of reported candidate deltas. Require source-sized summary bounds, `0<=M<=Psum<=T*M`, every reported delta bounded by the summary, and:
 
 ```text
-energy-rise-3-over-2-v0.2
+T == 0 implies Psum == M == 0
+T == 1 implies Psum == M
+M == 0 implies Psum == 0
+Psum >= Rsum + candidate_count - reported_candidate_count
 ```
 
-The compact packet records candidate count, total positive energy delta, maximum positive delta and up to the 16 strongest candidates. Strongest candidates are ordered by descending positive delta, then ascending frame index.
+When every transition is reported as a candidate, both summary statistics equal the reported sum and maximum exactly. For a truncated list, let the weakest reported delta/frame be `(d_w,f_w)`. An omitted candidate at frame `f` obeys `d<=d_w-1` for `f<f_w`, otherwise `d<=d_w`.
 
-Each reported candidate records:
-
-- short-profile frame index;
-- exact sample start;
-- previous energy;
-- current energy;
-- exact positive delta;
-- `rise_ratio`.
-
-Each previous/current candidate energy must fit the exact PCM16 maximum implied by the corresponding frozen 256-sample triangular window and source-tail availability. For either short frame with only one available source sample, energy must be a PCM16 integer square. With two available samples, energy must be `x^2 + 4*y^2` for PCM16 integers, since both triangular windows start with weights 1 and 2. The check uses the availability of each previous/current frame independently and applies to every channel.
-
-The summary `positive_delta_sum` and `maximum_positive_delta` are likewise bounded by the source-sized short-frame maxima. When the source produces fewer than two short frames, no transition exists and both summary totals are exactly `"0"`.
-
-If `T = short_event_count - 1`, every positive delta is at most `maximum_positive_delta`, so:
+Known adjacent reported energies constrain candidate eligibility in both mixed and all-candidate sets. For previous energy `P`, current energy `C`, and delta `d=C-P`:
 
 ```text
-positive_delta_sum <= T * maximum_positive_delta
+known P only: d >= max(1,ceil(P/2)), and P+d <= current source bound
+known C only: d >= C-min(previous source bound,C-1,floor(2*C/3))
+both known: d=C-P>0 and 2*C>=3*P
 ```
 
-Every omitted candidate is still a strict positive integer rise. Therefore, when `candidate_count` exceeds the number of reported strongest candidates:
+Enough eligible unreported frames must exist for the omitted-candidate count. Their smallest required contributions must fit the unreported mass `Psum-Rsum`. When all transitions are candidates, the exact omitted mass also fits the per-frame cutoff allowances and `M` equals the strongest reported candidate delta.
+
+A maximum stronger than the strongest reported candidate must come from a non-candidate transition. Acceptance requires at least one such unreported transition and enough unreported mass to attain `M`. Its known adjacent energies must permit that exact delta and fail the onset threshold. With neither energy known, the necessary cap is:
 
 ```text
-positive_delta_sum >=
-    sum(reported candidate positive_delta)
-    + (candidate_count - reported_candidate_count)
+d <= min((previous_max-1)//2,(current_max-1)//3)
 ```
 
-When `candidate_count > 16`, the 16 reported entries are not an arbitrary subset. They are the exact prefix under the authored ordering `(-positive_delta, frame_index)`. Let the weakest reported item have delta `d_w` at frame `f_w`. Any omitted candidate at frame `f` must satisfy:
+because a positive non-candidate rise requires `P>=2*d+1` and `C>=3*d+1`. With one known energy, the inferred other energy must satisfy source/tiny-tail feasibility and `2*C<3*P`; with both known, `d=C-P` is exact.
+
+### 7.1 Total unreported mass capacity
+
+Every unreported transition receives a non-candidate positive-delta cap `n[f]`:
 
 ```text
-f < f_w  implies omitted_delta <= d_w - 1
-f > f_w  implies omitted_delta <= d_w
+both known: C-P if C>P and 2*C<3*P, else 0
+P only: max(0,min(current_max-P,(P-1)//2))
+C only: C-(floor(2*C/3)+1), if that minimum P fits previous_max and P<C; else 0
+neither: min((previous_max-1)//2,(current_max-1)//3), or 0 for a zero bound
 ```
 
-An equal-delta earlier frame would win the ascending-frame tie break and must therefore have appeared in the reported 16.
+For an eligible omitted candidate derive a candidate cap `a[f]`: exact `C-P` when both are known, `current_max-P` when only P is known, C when only C is known, otherwise `current_max`. Intersect with the top-16 tie-aware allowance and require it to meet the candidate minimum above.
 
-When an omitted candidate borders reported frame-energy evidence, that evidence also constrains the omitted transition. Let its previous short-frame energy be `P`, current energy be `C`, and positive delta be `d=C-P`. If a neighboring reported candidate fixes `P` but not `C`, candidate status requires integer `d` satisfying:
+For omitted count `O`, start with `sum(n[f])` and replace exactly O eligible transition caps with candidate caps. The maximum capacity is the baseline plus the O largest gains `a[f]-n[f]`, including negative gains when required. Fewer than O eligible frames is rejection. Require `Psum-Rsum` not to exceed this capacity. These are necessary independently bounded transition/classification constraints, not a complete witness for the shared short-energy chain.
 
-```text
-C = P + d
-2*C >= 3*P
-therefore d >= ceil(P/2)
-```
-
-If a neighboring reported candidate fixes `C` but not `P`, candidate status requires:
-
-```text
-P <= floor(2*C/3)
-therefore d = C-P >= C - floor(2*C/3)
-```
-
-If both `P` and `C` are fixed by adjacent reported evidence, then `d=C-P` is exact and `C>P` plus `2*C>=3*P` must hold. These lower/exact bounds are combined with the deterministic top-16 cutoff. When every transition is a candidate, every unreported transition is one of these omitted candidates, so the exact positive mass outside the reported list must be at least the sum of all such per-frame minima and no greater than the sum of the per-frame cutoff allowances. Every omitted candidate remains strictly positive, and `maximum_positive_delta` equals the strongest reported candidate delta.
-
-A summary maximum may be larger than the strongest reported **candidate** only when that maximum belongs to a transition that is not a candidate. Otherwise a stronger omitted candidate would have ranked into the reported set. Therefore, whenever:
-
-```text
-maximum_positive_delta > strongest_reported_candidate_delta
-```
-
-compact acceptance requires at least one non-candidate transition and requires the positive-delta mass outside the reported candidate list to be at least `maximum_positive_delta`, so one such transition can attain the declared maximum.
-
-For non-zero previous energy:
+For nonzero previous energy the finite ratio is:
 
 ```json
-"rise_ratio": {
-  "numerator": "current_energy",
-  "denominator": "previous_energy"
-}
+"rise_ratio": {"numerator": "current_energy", "denominator": "previous_energy"}
 ```
 
-When the previous energy is exactly zero, the finite ratio is undefined and the canonical representation is:
+When previous energy is zero it is `null`, never a zero-denominator ratio.
 
-```json
-"rise_ratio": null
-```
+All covering long-event energies zero prove the channel samples are zero because their window weights are strictly positive. Such a channel requires candidate count zero, empty candidates, and both transient summaries zero.
 
-A zero denominator is never emitted.
-
-The two resolutions also share an exact zero-state constraint. The long triangular weights are strictly positive on every real source sample and the long-event schedule covers the channel. Therefore, if every covering long event has:
-
-```text
-windowed_energy == 0
-```
-
-then every source sample in that channel is zero. Compact transient acceptance for that channel then requires:
-
-```text
-candidate_count == 0
-strongest_candidates == []
-positive_delta_sum == 0
-maximum_positive_delta == 0
-```
-
-A nonzero short transient observation cannot coexist with a long profile that proves the waveform is all zero.
-
-This is an authored deterministic energy-rise detector. It is **not** claimed to be equivalent to a human auditory onset percept or a validated music-information-retrieval onset detector.
+This is an authored deterministic detector, not equivalence to human onset perception or a validated music-information-retrieval onset detector.
 
 ## 8. Channel relationships
 
-Channels remain independent signal streams. v0.2 does not downmix.
+Channels remain independent; there is no downmix. Each pair `i<j` records full-source dot product and sign, left/right sum of squares, difference/sum energies and zero-lag correlation squared. Correlation is null if either source energy is zero. Otherwise its numerator is dot squared and denominator is the product of source energies. Require exact sum/difference identities, consistent channel energies across pairs, PCM16 source-energy bounds, the Cauchy bound, positive-semidefinite complete Gram matrix and exact rank no greater than `frame_count`.
 
-For every ordered pair `i < j`, the compact packet records exact full-source integer quantities:
+For a one-frame multichannel source, the real DC coefficient divided by `32768^10` recovers each signed sole sample. Its energy is that PCM16 sample's square; every dot product equals the signed sample product, not merely its magnitude. One-frame long energies and both endpoint powers must describe those same samples.
 
-- dot product and its sign;
-- sum of squares for each channel;
-- sum-of-squares of `left - right`;
-- sum-of-squares of `left + right`;
-- exact rational zero-lag correlation squared when both channel energies are non-zero.
+Complete two-frame multichannel sources require one joint signed PCM16 vector assignment matching every Gram entry, the long weighted energies and endpoint evidence as defined in section 5. Mono two-frame sources still require the endpoint-compatible weighted-energy witness despite having no pair records.
 
-When either channel has zero total energy, `zero_lag_correlation_squared` is `null`.
+Complete three- and four-frame multichannel sources require the joint signed witness in section 8.2. For three frames, the established source/window energy equations `E=x^2+y^2+z^2`, `W=x^2+4*y^2+9*z^2`, and `W-E=3*y^2+8*z^2` remain necessary, but energy-only candidates cannot contradict reported spectral endpoint signs. Separate witnesses for each pair are insufficient.
 
-The complete channel Gram matrix must be positive semidefinite and its exact rank must not exceed the source `frame_count`, because the declared channel vectors live in that sample-dimensional space.
-
-For a **one-frame multichannel source**, each channel has one real PCM16 sample. Its sole long-event DC coefficient is purely real and, under section 4.1, equals that signed sample multiplied by `32768^10`. The compact event always reports the top-ranked DC component for a nonzero one-sample channel; zero-energy channels have signed sample 0. After exact division by `32768^10`, let the recovered signed samples be `s[c]`. Every relationship must satisfy:
-
-```text
-dot_product(i,j) = s[i] * s[j]
-```
-
-not merely `abs(dot_product) = abs(s[i]) * abs(s[j])`. The relationship sign, sum/difference energies and correlation fields must remain consistent with that signed dot product. Thus two reported positive DC coefficients cannot be paired with a negative dot product by changing only relationship fields and rehashing the envelope.
-
-For short sources, additional integer realizability constraints are identity-bearing. A one-frame channel energy must be a PCM16 integer square. A two-frame multi-channel source must admit one joint set of exact PCM16 integer vectors whose Gram products equal every declared channel relationship. For those two-frame vectors, the long event energy must also equal the exact committed weighted energy:
-
-```text
-windowed_energy = sample[0]^2 * w[0]^2 + sample[1]^2 * w[1]^2
-```
-
-with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid. Section 5's `D^2 + N^2 = 2*windowed_energy` identity additionally binds every complete two-sample channel to its exact single-event endpoint powers.
-
-For a three-frame multi-channel source, one joint assignment of signed PCM16 triples must reproduce every Gram entry and each channel's long-window energy. Individually realizable diagonals or separate witnesses for each pair are insufficient. For each channel, with declared source energy `E` and windowed energy `W`, its candidate triple `(x, y, z)` must satisfy:
-
-```text
-E = x^2 + y^2 + z^2
-W = x^2 + 4*y^2 + 9*z^2
-W - E = 3*y^2 + 8*z^2
--32768 <= x, y, z <= 32767
-```
-
-The reference enumerates at most 32769 magnitudes of `z`, derives `y^2` and `x^2` exactly, checks integer squares and PCM16 limits, and then searches for one assignment satisfying all channel dot products. The magnitude 32768 permits only the negative sign. This is an exact feasibility check for the declared three-frame Gram and weighted-energy data, not a reconstruction of the committed full spectrum or a general feasibility solver for arbitrary source lengths.
-
-These are signal relationships, not inferred speaker geometry or a claim about perceived stereo width.
+These are signal relationships, not inferred speaker geometry or perceived stereo width.
 
 ### 8.1 Three-frame mono weighted-energy feasibility
 
-A source with exactly three PCM frames and one channel has no Gram records, but its long event must still admit signed PCM16 samples `(x, y, z)` with:
+A complete three-frame mono source must admit signed PCM16 `(x,y,z)` with `W=x^2+4*y^2+9*z^2`. There is one long event. With `s=32768^10`, its exact endpoint powers satisfy:
 
 ```text
-W = x^2 + 4*y^2 + 9*z^2
--32768 <= x, y, z <= 32767
+P0 = (s*(x+2*y+3*z))^2
+P512 = (s*(x-2*y+3*z))^2
 ```
 
-There is exactly one long event, so its DC and Nyquist aggregate powers `P0` and `P512` are exact frame powers. Section 4.1 gives the exact endpoint scale `s = 32768^10`. The same candidate triple must satisfy:
+Require perfect-square powers and roots divisible by s. For each permitted sign choice `D=+/-sqrt(P0)/s`, `N=+/-sqrt(P512)/s`, compute:
 
 ```text
-P0   = (s * (x + 2*y + 3*z))^2
-P512 = (s * (x - 2*y + 3*z))^2
+y = (D-N)/4
+A = (D+N)/2
+R = 2*(W-4*y^2)-A^2
 ```
 
-Both powers must be perfect squares whose nonnegative square roots are divisible by `s`. For every sign choice `D = +/-sqrt(P0)/s` and `N = +/-sqrt(P512)/s`, compute:
+Both divisions are exact; R is nonnegative and square. For either signed root `d=+/-sqrt(R)`, derive `x=(A+d)/2`, `z=(A-d)/6` by exact division. All coordinates must lie in `[-32768,32767]`. At least one triple exists; zero signs/repeated roots need not be duplicated. At most eight candidates are considered.
+
+Every reported endpoint component fixes the signed scaled real value that the same witness must reproduce. Only omitted endpoints permit either sign. This is exact for weighted energy, endpoint powers and reported signs, not for the remaining spectrum, matrix commitments or source hashes. It applies to the complete three-frame mono source, not three-sample tails of longer sources. Rehashed `[1,0,0]` with W=2 and `[1,0,1]` with only a reported Nyquist sign flipped must be rejected.
+
+### 8.2 Joint signed three- and four-frame multichannel witnesses
+
+For each channel, source energy E is its Gram diagonal, W is its sole long-event weighted energy, and endpoint powers yield magnitudes after exact square-root/scale checks. Reported DC/Nyquist components fix signed D/N; unreported endpoints allow either sign of their magnitude. The same signed PCM16 vector MUST satisfy:
 
 ```text
-y = (D - N) / 4
-A = (D + N) / 2
-R = 2 * (W - 4*y^2) - A^2
+E = x^2 + y^2 + z^2 + t^2
+W = x^2 + 4*y^2 + 9*z^2 + 16*t^2
+D = x + 2*y + 3*z + 4*t
+N = x - 2*y + 3*z - 4*t
+-32768 <= x,y,z,t <= 32767
 ```
 
-Require exact integer division and a nonnegative perfect square `R`. For either root `d = +/-sqrt(R)`, derive `x = (A+d)/2` and `z = (A-d)/6`, again requiring exact division and all three signed PCM16 bounds. At least one valid triple must exist. Zero signs or repeated roots need not be duplicated. There are at most eight candidate triples, so no search over PCM16 coordinate pairs or large-integer factorization is needed.
+For a three-frame source use t=0 and retain `(x,y,z)`; for a four-frame source retain `(x,y,z,t)`.
 
-If DC or Nyquist is present in the event's `top_components`, its signed `real` value is identity-bearing evidence. After exact division by `s`, the accepted triple must reproduce that reported signed endpoint value. The solver may choose either sign only for an endpoint omitted from `top_components`. Thus endpoint powers determine the candidate magnitudes, but reported component signs constrain which magnitude-sign witness is admissible.
+For each allowed D/N pair derive `A=(D+N)/2=x+3z` and `B=(D-N)/4=y+2t`, rejecting nonexact division. For four frames enumerate integer t within PCM16 and the necessary bounds `t^2<=E`, `16*t^2<=W`; for three frames consider only zero. Then:
 
-This is exact feasibility for the declared weighted energy and the two endpoint powers plus any reported endpoint signs. It does not verify the remaining spectrum, its matrix commitments, or the source digests. The check applies to the complete three-frame mono source, not to three-sample tails of longer sources where aggregate endpoints are sums across events. Full sidecar verification remains the complete reconstructed-evidence check. In particular, rehashing a genuine `[1, 0, 0]` envelope after replacing its energy `"1"` with `"2"`, or rehashing `[1, 0, 1]` after flipping only a reported Nyquist sign, must return `False`.
+```text
+y = B - 2*t
+R = 2*(W - 4*y^2 - 16*t^2) - A^2
+x = (A + u)/2
+z = (A - u)/6
+```
+
+Require y in range and `y^2+t^2<=E`; require R nonnegative and square; try both `u=+/-sqrt(R)` with exact divisions and x/z in range. Retain only vectors reproducing E and W exactly. D/N are then reproduced by construction. There are at most four endpoint sign pairs, 65536 t values per pair and two root signs, with no search over coordinate pairs or floating-point approximation. Three-frame enumeration has at most eight candidates.
+
+At least one candidate per channel must exist. One **joint** assignment across channels must reproduce every Gram dot product using those exact candidates. Backtracking over at most eight channels, checking assigned dot products and diagonals, is one implementation; separate per-pair assignments are not sufficient. Repeated channel evidence may reuse a candidate set only under exact equality of all its inputs.
+
+This rejects four-frame orthogonal norms 1 and 7 and three-frame identical-channel Gram data paired with opposite reported DC signs. It is exact feasibility for the stated short-source energies, endpoints and Gram data, not verification of unreported coefficients, matrix/source hashes, arbitrary source lengths or tails of longer sources. Full sidecar verification remains the reconstructed-evidence path.
 
 ## 9. Compact percept identity
 
-The v0.2 core schema is:
+The core schema is `qsol-map-percept-core-v0.2` and envelope schema is `qsol-map-percept-envelope-v0.2`. Identity is:
 
 ```text
-qsol-map-percept-core-v0.2
+SHA256(UTF8("QSOL-MAP/PERCEPT/v0.2") + NUL + canonical_percept_core_bytes)
 ```
 
-The envelope schema is:
-
-```text
-qsol-map-percept-envelope-v0.2
-```
-
-Percept identity is:
-
-```text
-SHA256(
-  UTF8("QSOL-MAP/PERCEPT/v0.2")
-  + NUL
-  + canonical_percept_core_bytes
-)
-```
-
-Identity-bearing JSON remains float-free. Large exact integers are decimal strings.
-
-The package implementation identifier is:
-
-```text
-qsol-map-python-reference-0.2.0
-```
-
-and the package version is `0.2.0`.
+Identity-bearing JSON remains float-free. Large exact integers are decimal strings. The implementation identifier is `qsol-map-python-reference-0.2.0` and package version is `0.2.0`.
 
 ## 10. Verification contract
 
-The compact v0.2 verifier is fail-closed for untrusted data.
+The compact verifier fails closed for untrusted data. Acceptance requires:
 
-It requires:
-
-- exact envelope/core schemas;
-- Layer-1 identity;
-- exact implementation/profile definitions;
-- canonical source metadata;
-- exact typed integer fields rather than Python Boolean/int equality aliases;
-- canonical matrix/source SHA-256 digests;
-- valid bounded decimal strings;
-- valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
-- section 4.2 **per-bin coefficient divisors** for every retained single-event coefficient component and the corresponding single-event aggregate powers, including bins omitted from compact components;
-- complete two-sample source energy bound to exact endpoint powers by `D^2 + N^2 = 2*windowed_energy`;
-- three-frame mono weighted-energy and endpoint-power feasibility under section 8.1, with every reported endpoint sign preserved by the same PCM16 witness;
-- the bounded single-event aggregate two-square checks and exact endpoint squares with square roots divisible by `32768^10` in section 5;
-- source-tail signed endpoint congruences for reported one-event DC/Nyquist components, while omitted endpoints remain sign-unspecified;
-- exact aggregate equality for every bin selected in all long events, counting zero-power selections, the selected-subtotal lower bound for other bins, and per-event omitted-bin upper bounds that preserve the descending-power/ascending-bin tie break;
-- per-event centroid lower and upper bounds from selected and omitted power: `K <= N <= K + 512*(D-S)` as defined in section 5;
-- valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
-- the exact top-16 candidate cutoff when candidates are truncated, including ascending-frame tie ordering, plus the adjacent reported-energy constraints on omitted candidates defined in section 7;
-- feasibility of any summary maximum stronger than the strongest reported candidate from an actual non-candidate transition with sufficient unreported positive mass;
-- the all-zero cross-resolution rule: zero energy in every covering long event forces a zero/empty transient observation for that channel;
-- valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including joint two- and three-frame Gram/long-energy compatibility;
-- for one-frame multichannel sources, relationship dot products bound to the signed PCM samples recovered from the reported DC coefficients, not merely their magnitudes;
+- exact schemas, Layer-1 identity, implementation/profile definitions and canonical source metadata;
+- exact typed fields, not Boolean/int equality aliases; canonical matrix/source digests and bounded canonical decimal strings;
+- valid event structure, source/window and finite-transform energy bounds, tiny-tail and overlap feasibility;
+- section 4.2 **per-bin coefficient divisors** for every event's reported coefficients, all aggregate powers including multi-event sums, and each event's denominator/numerator sum divisors;
+- single-event two-square filters, endpoint squares/scale/parity, signed window congruences, endpoint Cauchy bounds and equality witnesses;
+- exact aggregate equality for fully selected bins, selected lower bounds, tie-aware omitted-bin capacities and one joint residual allocation under section 5.1;
+- exact global centroid identities and per-event selected/omitted moment bounds;
+- valid transient structure, source/tail bounds, adjacent reported-energy consistency, exact complete selections, top-16 ordering, mixed-set eligibility, unreported mass capacity and maximum feasibility under sections 7 and 7.1;
+- the all-zero cross-resolution rule;
+- exact channel identities, PSD/rank/source bounds, one/two-sample integer witnesses, three-frame mono witnesses under section 8.1 and shared signed three/four-frame multichannel witnesses under section 8.2;
 - the final domain-separated percept digest.
 
-Untrusted decimal strings are bounded to at most 1024 digits before `int()` conversion. This is both a format bound and a fail-closed guard against Python's configurable integer-string digit limit.
-
-Malformed documents must produce `False` from verification rather than escaping the Boolean verifier contract through conversion errors.
+Untrusted decimal strings are bounded to 1024 digits before integer conversion. Signed zero is encoded only as `"0"`, not `"-0"`. Malformed documents must return `False`, not escape the Boolean contract through conversion or recursion errors. Compact acceptance is not a complete arbitrary-length waveform or source-authenticity proof.
 
 ## 11. Optional full spectral sidecar
 
-The compact packet commits full matrices without embedding every coefficient. v0.2 optionally exports the full short+long evidence as canonical NDJSON:
+The compact packet commits full matrices without embedding every coefficient. The optional schema `qsol-map-spectral-sidecar-v0.2` is canonical NDJSON: one header, all short-profile rows in channel/frame order, all long-profile rows in channel/frame order, then one receipt trailer.
 
-```text
-qsol-map-spectral-sidecar-v0.2
-```
+Each record is exact UTF-8 terminated by one LF byte. CRLF and other translated delimiters are noncanonical. Binary-backed text inputs are read before newline translation. Seekable inputs, including StringIO, begin at logical position zero; nonzero positions are rejected without consuming or rewinding. Already-zero binary-backed text wrappers are synchronized before exact reads. Non-seekable binary-backed inputs bypass tell/seek. Explicit record iterables are checked as the complete supplied sequence, with no claim about previously discarded data.
 
-The sidecar contains:
+StringIO verifier inputs using newline=None are rejected because prior CRLF can already have been erased. Explicit newline="" and newline="\n" remain supported. Writer semantics differ: newline=None preserves written LF, while translating newline="\r" or newline="\r\n" sinks are rejected. Binary-backed writer output bypasses text translation.
 
-1. one canonical header;
-2. all short-profile frame rows in channel/frame order;
-3. all long-profile frame rows in channel/frame order;
-4. one canonical trailer containing record count and a domain-separated receipt.
+Every coefficient entry is `["real","imag","power"]`, with bounded canonical decimals and `power=real^2+imag^2`. Acceptance requires:
 
-Every record is encoded as exact UTF-8 bytes terminated by one LF byte (`0x0A`). CRLF (`0x0D 0x0A`) and other translated line endings are non-canonical. Verification of file-backed text streams must inspect the underlying bytes before any `TextIOWrapper` newline translation can convert CRLF into LF.
+- canonical UTF-8/LF/header bytes and the complete-stream rules above;
+- exact deterministic order and plain non-Boolean channel/frame/sample positions;
+- coefficient syntax, bounds, endpoint reality and power arithmetic;
+- record/trailer receipts and reconstructed short/long matrix commitments;
+- exact inverse PCM16 reconstruction for both profiles with overlap, window divisibility, sample-range and zero-tail checks;
+- identical reconstructed short/long waveforms;
+- reconstructed interleaved PCM SHA-256 equal to `source.pcm_s16le_sha256`;
+- rebuilt frozen-v0.1 percept equal to `short_reference.percept_sha256`;
+- long-event observations, transients and channel relationships equal to reconstructed evidence;
+- no missing/extra records, including decode failures after a valid trailer.
 
-Seekable verifier inputs, including `StringIO`, must begin at logical position zero. A nonzero logical position must be rejected before consuming records, without rewinding the input: verifying a suffix after a skipped prefix does not verify the complete stream. A binary-backed text wrapper already at logical zero is synchronized to that position before exact byte reads, rather than starting from its possibly advanced read-ahead buffer position. Explicit record iterables are verified as the complete supplied sequence; acceptance makes no claim about content discarded before creating that sequence.
+Before analysis rebuild or output, the writer independently validates PCM16Wave metadata, immutable tuple-of-tuples dimensions and plain signed PCM16 samples. It recomputes SHA-256 in bounded chunks over frame-major, ascending-channel signed little-endian PCM bytes and requires the supplied PCM digest to match. Inconsistency raises ValueError before output or receipt. The writer then rebuilds v0.2 and requires exact canonical-envelope equality, including matrix and observation commitments.
 
-Every coefficient entry is:
+Destinations must be provably empty, seekable and at offset zero. Legal short writes are completed; counts must be plain integers greater than zero and no larger than the remaining payload. Zero, None, negative, Boolean, non-integer or oversized counts raise OSError; destination errors propagate. Failed output may remain partial, but no successful receipt is returned. Binary-backed text output uses exact UTF-8 and completed text write counts are character counts. This does not promise rollback or durable storage.
 
-```json
-["real", "imag", "power"]
-```
-
-where all three are canonical bounded decimal strings and `power = real^2 + imag^2`.
-
-Acceptance requires all of the following identity-bearing evidence relationships:
-
-- canonical UTF-8/LF line encoding and exact canonical header bytes;
-- logical position zero at entry for seekable inputs, with no skipped stream prefix;
-- exact deterministic row order and plain non-Boolean integer channel/frame/sample position fields;
-- coefficient decimal syntax, bounds, and exact power arithmetic;
-- records receipt and trailer receipt;
-- reconstructed short and long complex/power matrix commitments against the compact percept;
-- exact inverse reconstruction of PCM16 samples from both spectral profiles, including overlap consistency, window divisibility, PCM16 range, and zero-padded tails;
-- identical reconstructed PCM waveform from the short and long profiles;
-- SHA-256 of the reconstructed interleaved PCM payload equal to `source.pcm_s16le_sha256`;
-- reconstruction of the frozen v0.1 percept identity from the short-profile evidence equal to `short_reference.percept_sha256`;
-- transient observations reconstructed from the short-profile rows equal to the compact transient observations;
-- channel relationships recomputed from reconstructed PCM equal to the compact channel relationships;
-- no missing or extra records, including decode failures after an otherwise valid trailer.
-
-The public sidecar writer validates the supplied `PCM16Wave` independently before rebuilding analysis or touching its destination. The Python API requires an immutable tuple of channel tuples with exactly the declared channel count and frame count, plain signed PCM16 integer samples, and adapter-valid integer metadata. It recomputes SHA-256 over the samples serialized in frame order, then ascending channel order within each frame, with each sample encoded as signed 16-bit little-endian bytes. This digest must equal `pcm_s16le_sha256`; a stale or directly constructed inconsistent wave raises `ValueError` before any sidecar output or receipt. Hashing uses bounded payload chunks, not a complete duplicate PCM payload.
-
-The writer then accepts an envelope only when rebuilding v0.2 analysis from those validated samples produces that exact canonical envelope, so it cannot emit a receipt for evidence that contradicts declared matrix or observation commitments. The destination must be provably empty, seekable, and positioned at byte/character offset zero before the header is written; append-positioned or stale-tail destinations are rejected.
-
-Every record payload and LF terminator must be fully accepted by the destination before the writer returns a successful receipt. The Python adapter loops on legal short writes; a write count must be a plain integer greater than zero and no greater than the remaining payload length. Zero, `None`, negative, Boolean, non-integer or oversized counts raise `OSError`, and destination exceptions propagate. A failed write may leave partial output, but must not return a successful receipt. This is not a transactional rollback or durable-storage guarantee. Binary-backed text streams use exact UTF-8 bytes; the adapter's text `write()` return value is the completed character count.
-
-`PCM16Wave` does not retain the original RIFF container bytes. This writer check therefore validates the sample-payload commitment, not a reconstruction of `source_sha256` or authenticity of the source recording.
-
-The verifier uses bounded row reads and bounded temporary spools rather than constructing complete spectral matrices or unbounded in-memory waveforms.
+PCM16Wave does not retain original RIFF bytes; sample commitment validation does not recompute `source_sha256` or prove authenticity. Verification uses bounded reads and temporary spools rather than complete in-memory matrices/waveforms, and validates the envelope before allocating channel spools.
 
 ## 12. CLI
 
@@ -681,9 +559,9 @@ python3 -m qsol_map verify-v0.2 percept-v02.json
 python3 -m qsol_map verify-sidecar-v0.2 percept-v02.json spectral-v02.ndjson
 ```
 
-The compact percept output and sidecar output must identify different filesystem destinations. Existing aliases are detected by filesystem identity. For initially nonexistent names in one target directory, the implementation also rejects aliases produced by filesystem case folding and Unicode normalization equivalence, including NFC/NFD-equivalent spellings such as precomposed and decomposed `é`, when the target filesystem treats those names as the same destination. A collision is rejected before either output is written.
+Percept and sidecar outputs must identify different destinations and must not alias the input or implicit stdout as applicable. Existing aliases use filesystem identity. Initially nonexistent names are checked for filesystem case folding and Unicode normalization equivalence, including NFC/NFD spellings such as precomposed/decomposed `é`. The CLI reserves nontruncating regular-file handles, validates identities before writes, and writes through held descriptors rather than reopening replacement pathnames after analysis. A changed reserved path fails rather than being followed. This is not an atomic multi-file transaction.
 
-The original v0.1 commands remain available:
+Frozen v0.1 commands remain:
 
 ```bash
 python3 -m qsol_map analyze input.wav -o percept-v01.json
@@ -692,26 +570,17 @@ python3 -m qsol_map verify percept-v01.json
 
 ## 13. Golden vectors
 
-The test suite freezes both:
-
-- the existing v0.1 percept hash;
-- a new deterministic v0.2 percept hash.
-
-The v0.2 golden percept SHA-256 is:
+The suite freezes the existing v0.1 percept hash and the deterministic v0.2 percept hash:
 
 ```text
 c167694d60661ceac1d01d6504cbd8b5db77286ce09b28a342629b03046735d7
 ```
 
-for the fixture defined in `tests/test_multiresolution.py`.
+for `tests/test_multiresolution.py`'s fixture. The existing separately frozen sidecar receipt also remains protected. These prerelease verifier corrections do not change authored transform output or golden identities.
 
 ## 14. Optimization boundary
 
-The exact Python implementation remains the authority path. The analysis loops process one frame at a time and the full-evidence sidecar streams rows instead of materializing complete matrices.
-
-`QSOLKCB/OPT` remains the optimization policy source. Performance measurements must include target environment/toolchain context. No portable speedup is claimed by this profile.
-
-The environment-scoped benchmark must run from an ordinary checkout:
+The exact Python implementation remains the authority path. Analysis processes one frame at a time; sidecar evidence streams rows. QSOLKCB/OPT remains the optimization policy source. Measurements include target environment/toolchain context and imply no portable speedup. The checkout-runnable benchmark is:
 
 ```bash
 python3 scripts/benchmark_v02.py
@@ -721,15 +590,4 @@ It is not a CI performance gate.
 
 ## 15. Non-goals
 
-v0.2 is not:
-
-- subjective AI hearing;
-- a psychoacoustic model;
-- a claim about sensor response beyond the recorded digital samples;
-- lossless audio compression;
-- semantic music understanding;
-- learned tokenization;
-- a spatial-audio geometry solver;
-- a validated human-onset detector;
-- a realtime-performance guarantee;
-- a portable benchmark claim.
+v0.2 is not subjective AI hearing, a psychoacoustic model, proof of sensor response beyond supplied samples, lossless audio compression, semantic music understanding, learned tokenization, a spatial geometry solver, a validated human-onset detector, or a realtime/portable performance guarantee.
