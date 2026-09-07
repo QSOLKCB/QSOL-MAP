@@ -242,8 +242,10 @@ def _single_sample_relationships_are_integer_realizable(percept: dict) -> bool:
     channels = percept["channels"]
     event_energies: list[int] = []
     magnitudes: list[int] = []
+    endpoint_scale_squared = _LONG_FFT_ENDPOINT_SCALE * _LONG_FFT_ENDPOINT_SCALE
     for channel in channels:
-        events = channel["long_spectral"]["events"]
+        spectral = channel["long_spectral"]
+        events = spectral["events"]
         if len(events) != 1:
             return False
         energy = _core._safe_decimal_int(events[0]["windowed_energy"])
@@ -252,6 +254,13 @@ def _single_sample_relationships_are_integer_realizable(percept: dict) -> bool:
         magnitude = isqrt(energy)
         if magnitude * magnitude != energy or magnitude >= (1 << 15) + 1:
             return False
+        expected_endpoint_power = energy * endpoint_scale_squared
+        for endpoint in (0, LONG_FRAME_SIZE // 2):
+            endpoint_power = _core._safe_decimal_int(
+                spectral["aggregate_power_by_bin"][endpoint]
+            )
+            if endpoint_power != expected_endpoint_power:
+                return False
         event_energies.append(energy)
         magnitudes.append(magnitude)
 
@@ -549,11 +558,13 @@ def _validate_percept_core(percept: object) -> bool:
             return False
 
         reported_delta_sum = 0
+        reported_deltas: list[int] = []
         for candidate in transient["strongest_candidates"]:
             positive_delta = _core._safe_decimal_int(candidate["positive_delta"])
             if positive_delta is None:
                 return False
             reported_delta_sum += positive_delta
+            reported_deltas.append(positive_delta)
         omitted_candidate_count = transient["candidate_count"] - len(
             transient["strongest_candidates"]
         )
@@ -563,9 +574,13 @@ def _validate_percept_core(percept: object) -> bool:
         if (
             transient["candidate_count"] == transition_count
             and transient["candidate_count"] == len(transient["strongest_candidates"])
-            and reported_delta_sum != positive_delta_sum
         ):
-            return False
+            expected_maximum = reported_deltas[0] if reported_deltas else 0
+            if (
+                reported_delta_sum != positive_delta_sum
+                or maximum_positive_delta != expected_maximum
+            ):
+                return False
 
         for candidate in transient["strongest_candidates"]:
             frame_index = candidate["frame_index"]
