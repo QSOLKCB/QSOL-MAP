@@ -38,7 +38,12 @@ For an accepted source and `qsol-map-multiresolution-v0.2`, the reference implem
 16. output collisions are rejected before writing, including filesystem aliases created by case folding or Unicode normalization equivalence on target filesystems that treat such spellings as identical;
 17. the v0.2 golden vector protects the current multi-resolution reference behavior;
 18. single-event aggregate powers, including omitted interior bins, satisfy the bounded necessary two-square checks in specification section 5, without claiming complete large-integer factorization;
-19. the writer completes legal partial writes and cannot return a successful receipt after invalid write progress or a destination exception.
+19. the writer completes legal partial writes and cannot return a successful receipt after invalid write progress or a destination exception;
+20. reported single-event DC/Nyquist signs are preserved and checked against the committed source-tail window congruences, while omitted endpoints remain sign-unspecified;
+21. a complete two-sample channel binds its exact long energy to its scaled endpoint powers by `D^2 + N^2 = 2*windowed_energy`;
+22. a complete three-sample mono witness must reproduce the sign of every reported endpoint component, not only its aggregate magnitude;
+23. per-event top-component omissions respect the authored descending-power/ascending-bin tie break, and per-event centroid numerators are bounded by both selected and omitted power;
+24. transient summaries with more than 16 candidates preserve the deterministic top-16 cutoff, including ascending-frame ties, and a maximum stronger than the strongest reported candidate must be realizable by a non-candidate transition with sufficient unreported positive mass.
 
 ## What QSOL-MAP v0.2.0 does not claim
 
@@ -83,7 +88,17 @@ Independent producers must use those exact committed integers and that algorithm
 
 For a single long event, every aggregate bin equals one integer complex power, including bins omitted from the compact components. The compact verifier requires each nonzero power's odd part to be 1 modulo 4 and its valuations at primes `{3, 7, 11, 19, 23, 31}` to be even; endpoint powers additionally require exact squares whose square roots are divisible by `32768^10`. This scale requirement applies to every single-event channel, not only three-frame mono sources, and permits zero. These bounded necessary checks reject impossible values without unbounded factorization. Passing is not a complete two-square existence proof or proof that the entire FFT row arises from the declared samples. The single-row condition is not imposed on sums across multiple events. Full sidecar verification checks actual coefficients and reconstructed PCM.
 
-For every channel, a bin selected in every long event has a fully known aggregate: it must equal the sum of those reported powers. Zero-power selections count toward completeness. Bins omitted from at least one event may have additional unreported power, but their aggregate must still be at least the selected subtotal. This exact completeness check is not reconstruction of the remaining omitted spectrum.
+For a one-event endpoint pair, a DC or Nyquist component present in `top_components` retains its signed `real` coefficient after division by `32768^10`. The signed values must satisfy `D+N = 2*sum(even-index w*x)` and `D-N = 2*sum(odd-index w*x)` for the samples actually available in that source tail. The reference enforces the corresponding exact divisibility constraints from the committed integer window weights. An omitted endpoint supplies only its power magnitude and may use either sign as a compact witness.
+
+For every channel, a bin selected in every long event has a fully known aggregate: it must equal the sum of those reported powers. Zero-power selections count toward completeness. Bins omitted from at least one event may have additional unreported power, but their aggregate must still be at least the selected subtotal. Per-event upper caps also preserve the top-K ordering: an omitted bin with an index smaller than the weakest selected bin must have strictly lower integer power; a later omitted bin may tie the weakest selected power.
+
+For each event, selected components constrain the centroid from both sides. If `S` is selected power, `K` selected weighted power, `D` the centroid denominator and `N` the numerator, compact acceptance requires:
+
+```text
+K <= N <= K + 512 * (D - S)
+```
+
+The upper bound is necessary because all omitted retained bins have indices at most 512. These checks are consistency constraints on compact observations, not reconstruction of the omitted spectrum.
 
 ## Transient boundary
 
@@ -101,6 +116,10 @@ When `previous == 0`, the ratio is not finite. The canonical representation uses
 
 Candidate energies and summary totals must remain within the maximum possible values implied by PCM16 input, the frozen short triangular window and the source tail. If fewer than two short frames exist, there is no transition and both summary totals are zero. Across `T` transitions, `positive_delta_sum` cannot exceed `T * maximum_positive_delta`. When `candidate_count` exceeds the 16 reported strongest candidates, every omitted candidate is still a strict positive integer rise and contributes at least one unit to the minimum feasible positive-delta sum.
 
+The 16 reported entries are the actual deterministic prefix ordered by descending `positive_delta` and then ascending `frame_index`. An omitted candidate can equal the weakest reported delta only at a later frame. An earlier equal-delta candidate would rank into the reported set and is therefore inconsistent. If every transition is a candidate, the exact positive mass outside the 16 reported entries must fit the per-frame cutoff allowances, and `maximum_positive_delta` equals the strongest reported candidate delta.
+
+If `maximum_positive_delta` is larger than the strongest reported candidate, that maximum cannot be an omitted stronger candidate because it would have ranked into the reported set. Compact acceptance therefore requires at least one non-candidate transition and enough positive-delta mass outside the reported candidate set for one such transition to attain the declared maximum.
+
 Each reported previous/current short frame with one available sample requires energy `x^2`, and with two available samples requires `x^2 + 4*y^2`, for signed PCM16 integers. These tail-specific checks apply independently of channel count and reject unattainable energies even below the generic upper bound.
 
 ## Channel boundary
@@ -109,11 +128,11 @@ Channels are never implicitly mixed in the canonical v0.1 or v0.2 paths.
 
 Pairwise v0.2 quantities such as dot product, difference energy, sum energy and zero-lag correlation squared are exact signal relationships. The complete Gram matrix must be positive semidefinite and have rank at most `frame_count`, so accepted relationships can arise from real vectors in the declared sample space; that alone does not establish PCM16 integer realizability.
 
-Short sources receive additional integer-realizability constraints. In particular, a two-frame multichannel compact percept must admit one joint set of PCM16 integer vectors satisfying the complete Gram data, and those same feasible vectors must reproduce each channel's declared long-window energy under the committed first two long-window weights. A two-frame mono source must still admit PCM16 integers realizing that weighted energy, despite having no channel-pair records. All one/two-sample long tails receive the same exact energy checks. A merely bounded but unattainable energy is invalid.
+Short sources receive additional integer-realizability constraints. In particular, a two-frame multichannel compact percept must admit one joint set of PCM16 integer vectors satisfying the complete Gram data, and those same feasible vectors must reproduce each channel's declared long-window energy under the committed first two long-window weights. A two-frame mono source must still admit PCM16 integers realizing that weighted energy, despite having no channel-pair records. All one/two-sample long tails receive the same exact energy checks. For a complete two-sample channel, the scaled endpoint magnitudes additionally satisfy `D^2 + N^2 = 2*windowed_energy`; a merely feasible energy that contradicts the sole spectral row is invalid.
 
 For three-frame multichannel sources, the verifier requires one common assignment of signed PCM16 triples satisfying every channel dot product and both source energy `E = x^2 + y^2 + z^2` and long energy `W = x^2 + 4*y^2 + 9*z^2`. The search derives candidates from `W-E = 3*y^2 + 8*z^2`, preserving the asymmetric signed range at -32768. It rejects jointly impossible triples even when each pair has a separate witness. This is exact feasibility for these Gram and weighted-energy quantities, not verification of the full matrix commitments.
 
-For a complete three-frame mono source, absence of Gram records does not waive weighted-energy feasibility. The verifier requires a signed PCM16 triple matching `W = x^2 + 4*y^2 + 9*z^2` and both DC/Nyquist aggregate powers with exact endpoint coefficient scale `32768^10`. Square and divisibility checks recover at most eight candidates, preserving -32768 while excluding +32768. This is exact for those three observations only: it does not certify remaining spectral coefficients, matrix commitments or source digests, and does not apply that endpoint-aggregate rule to three-sample tails of longer sources. See specification section 8.1.
+For a complete three-frame mono source, absence of Gram records does not waive weighted-energy feasibility. The verifier requires a signed PCM16 triple matching `W = x^2 + 4*y^2 + 9*z^2` and both DC/Nyquist aggregate powers with exact endpoint coefficient scale `32768^10`. Square and divisibility checks recover at most eight candidates, preserving -32768 while excluding +32768. If an endpoint is present in `top_components`, the accepted triple must reproduce that endpoint's reported signed scaled `real` coefficient; only an omitted endpoint remains sign-unspecified. This is exact for those observations only: it does not certify remaining spectral coefficients, matrix commitments or source digests, and does not apply that endpoint-aggregate rule to three-sample tails of longer sources. See specification section 8.1.
 
 These compact checks are necessary constraints, not a complete proof that every arbitrary-length compact observation has an integer waveform realization. Full sidecar verification separately reconstructs and binds actual PCM samples.
 
@@ -161,8 +180,11 @@ Important rules include:
 - identity-bearing decimal strings are canonical and length-bounded before integer conversion;
 - exact typed structures use canonical-byte comparison where ordinary Python equality would blur `False` with `0` or `True` with `1`;
 - long and short-frame authored energies are bounded by the source/PCM/window contract and additional exact short-source feasibility constraints, including one/two-sample mono windows and tails;
-- long spectral power and top-component claims must fit finite transform/ranking bounds, with bounded necessary two-square checks for single-event aggregates;
-- transient summaries must account for transition multiplicity and omitted candidates;
+- complete two-sample channels bind weighted energy to endpoint powers with `D^2 + N^2 = 2W`, and complete three-sample mono witnesses preserve any reported endpoint signs;
+- reported one-event endpoint signs obey the committed source-tail window congruences;
+- long spectral power and top-component claims must fit finite transform/ranking bounds, including strict tie-aware omitted-bin cutoffs and bounded necessary two-square checks for single-event aggregates;
+- every event centroid is bounded both below and above by its selected/omitted power split;
+- transient summaries must account for transition multiplicity, omitted candidates, the deterministic top-16 cutoff, frame-index tie ordering, and feasibility of any maximum stronger than the strongest reported candidate;
 - channel relationships must be jointly feasible in the declared sample dimension, including one shared PCM16 assignment for three-frame Gram and weighted-energy data;
 - invalid structural data is rejected even when an attacker recomputes outer hashes;
 - writer-side sample commitments are recomputed rather than trusted from the input object;
