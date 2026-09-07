@@ -80,12 +80,18 @@ def _tail_energy_fits_previous_overlap(
 ) -> bool:
     """Require one exact current-tail witness to fit the previous frame energy.
 
-    Consecutive short and long frames overlap by exactly half a window. When
-    the later frame has only one or two real source samples, its exact energy
-    determines a bounded set of squared sample magnitudes. Those same samples
-    occur in the preceding frame at the supplied overlap weights. For each
-    witness, the remaining previous-frame energy must be nonnegative and, for
-    small residuals, exactly realizable by the preceding non-overlap weights.
+    Consecutive short and long frames overlap by exactly half a symmetric
+    triangular window. When the later frame has only one or two real source
+    samples, its exact energy determines a bounded set of squared sample
+    magnitudes. Those same samples occur in the preceding frame at the supplied
+    overlap weights. For each witness, the remaining previous-frame energy
+    must be nonnegative and, for small residuals, exactly realizable by the
+    preceding non-overlap weights.
+
+    If callers omit ``previous_nonoverlap_weights``, the frozen triangular
+    half-window is recovered from the first overlap weight: short and long
+    adjacent frames begin their overlap at weights 128 and 512 respectively,
+    so the preceding non-overlap weights are exactly 1..that value.
 
     This is a necessary compact-envelope check. Large residuals deliberately
     remain a bounded necessary test; full sidecar verification reconstructs
@@ -95,6 +101,13 @@ def _tail_energy_fits_previous_overlap(
         return True
     if len(previous_overlap_weights) != current_available:
         return False
+    if not previous_nonoverlap_weights:
+        if not previous_overlap_weights or previous_overlap_weights[0] <= 0:
+            return False
+        previous_nonoverlap_weights = tuple(
+            range(1, previous_overlap_weights[0] + 1)
+        )
+
     options = _tail_squared_magnitude_options(current_energy, current_available)
     if not options:
         return False
