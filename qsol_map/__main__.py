@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -23,6 +24,94 @@ def _write_envelope(envelope: dict, output_path: Path | None) -> None:
         sys.stdout.buffer.write(encoded + b"\n")
     else:
         output_path.write_bytes(encoded)
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    """Write the complete byte payload to an already validated file handle."""
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if type(written) is not int or written <= 0 or written > len(view):
+            raise OSError("output write made invalid progress")
+        view = view[written:]
+
+
+def _reserve_output_file(path: Path) -> int:
+    """Open or create a regular output without truncating or following a symlink."""
+    flags = os.O_WRONLY
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        try:
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("v0.2 output destination must be a regular file")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _same_stat(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _reserved_path_matches(path: Path, fd: int) -> bool:
+    """Check that a reserved pathname still names the already-open file."""
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        fd_stat = os.fstat(fd)
+    except OSError:
+        return False
+    return stat.S_ISREG(path_stat.st_mode) and _same_stat(path_stat, fd_stat)
+
+
+def _stdout_stat():
+    try:
+        return os.fstat(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _validate_reserved_outputs(
+    input_stat: os.stat_result,
+    output_path: Path | None,
+    output_fd: int | None,
+    sidecar_path: Path | None,
+    sidecar_fd: int | None,
+    *,
+    require_paths_unchanged: bool,
+) -> None:
+    """Validate reserved destination identities before any truncating write."""
+    output_stat = os.fstat(output_fd) if output_fd is not None else None
+    sidecar_stat = os.fstat(sidecar_fd) if sidecar_fd is not None else None
+    stdout_stat = _stdout_stat()
+
+    if output_stat is not None and _same_stat(input_stat, output_stat):
+        raise ValueError("percept output must not overwrite the input WAV")
+    if output_stat is None and stdout_stat is not None and _same_stat(input_stat, stdout_stat):
+        raise ValueError("stdout percept output must not alias the input WAV")
+    if sidecar_stat is not None and _same_stat(input_stat, sidecar_stat):
+        raise ValueError("sidecar output must not overwrite the input WAV")
+    if output_stat is not None and sidecar_stat is not None and _same_stat(output_stat, sidecar_stat):
+        raise ValueError("percept output and sidecar output must be different paths")
+    if output_stat is None and sidecar_stat is not None and stdout_stat is not None:
+        if _same_stat(sidecar_stat, stdout_stat):
+            raise ValueError("sidecar output must not alias stdout when the percept is written to stdout")
+
+    if require_paths_unchanged:
+        if output_fd is not None and output_path is not None:
+            if not _reserved_path_matches(output_path, output_fd):
+                raise ValueError("percept output path changed after reservation")
+        if sidecar_fd is not None and sidecar_path is not None:
+            if not _reserved_path_matches(sidecar_path, sidecar_fd):
+                raise ValueError("sidecar output path changed after reservation")
 
 
 def _filesystem_case_insensitive(directory: Path) -> bool:
@@ -144,6 +233,9 @@ def _analyze(input_path: Path, output_path: Path | None) -> int:
 
 
 def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path | None) -> int:
+    # Keep the cheap name/filesystem preflight for clear errors, but do not
+    # trust it as the write authority. The actual v0.2 destinations are opened
+    # and validated below before the potentially expensive analysis begins.
     if output_path is not None and _same_path(input_path, output_path):
         raise ValueError("percept output must not overwrite the input WAV")
     if output_path is None and _same_as_stream(input_path, sys.stdout):
@@ -155,13 +247,73 @@ def _analyze_v02(input_path: Path, output_path: Path | None, sidecar_path: Path 
     if output_path is None and sidecar_path is not None and _same_as_stream(sidecar_path, sys.stdout):
         raise ValueError("sidecar output must not alias stdout when the percept is written to stdout")
 
-    wave = parse_pcm16_wav(input_path.read_bytes())
-    envelope = build_multiresolution_percept(wave)
-    _write_envelope(envelope, output_path)
-    if sidecar_path is not None:
-        with sidecar_path.open("w", encoding="utf-8", newline="") as stream:
-            write_spectral_sidecar(wave, envelope, stream)
-    return 0
+    output_fd: int | None = None
+    sidecar_fd: int | None = None
+    with input_path.open("rb") as input_stream:
+        input_stat = os.fstat(input_stream.fileno())
+        try:
+            if output_path is not None:
+                output_fd = _reserve_output_file(output_path)
+            if sidecar_path is not None:
+                sidecar_fd = _reserve_output_file(sidecar_path)
+
+            _validate_reserved_outputs(
+                input_stat,
+                output_path,
+                output_fd,
+                sidecar_path,
+                sidecar_fd,
+                require_paths_unchanged=True,
+            )
+
+            wave = parse_pcm16_wav(input_stream.read())
+            envelope = build_multiresolution_percept(wave)
+
+            # Re-check the reserved names after analysis. If another process
+            # replaced either directory entry, fail before truncating either
+            # already-open output. Writes themselves use only the reserved fds.
+            _validate_reserved_outputs(
+                input_stat,
+                output_path,
+                output_fd,
+                sidecar_path,
+                sidecar_fd,
+                require_paths_unchanged=True,
+            )
+
+            encoded = canonical_bytes(envelope)
+            if output_fd is None:
+                sys.stdout.buffer.write(encoded + b"\n")
+            else:
+                os.ftruncate(output_fd, 0)
+                os.lseek(output_fd, 0, os.SEEK_SET)
+                _write_all(output_fd, encoded)
+
+            if sidecar_fd is not None:
+                os.ftruncate(sidecar_fd, 0)
+                os.lseek(sidecar_fd, 0, os.SEEK_SET)
+                with os.fdopen(
+                    os.dup(sidecar_fd),
+                    "w",
+                    encoding="utf-8",
+                    newline="",
+                ) as stream:
+                    write_spectral_sidecar(wave, envelope, stream)
+
+            _validate_reserved_outputs(
+                input_stat,
+                output_path,
+                output_fd,
+                sidecar_path,
+                sidecar_fd,
+                require_paths_unchanged=True,
+            )
+            return 0
+        finally:
+            if output_fd is not None:
+                os.close(output_fd)
+            if sidecar_fd is not None:
+                os.close(sidecar_fd)
 
 
 def _verify(input_path: Path) -> int:
