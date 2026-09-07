@@ -43,6 +43,25 @@ def _line_limit_modules():
     return unique
 
 
+def _stringio_preserves_lf(stream: io.StringIO) -> bool:
+    """Return whether this StringIO's configured newline mode preserves LF.
+
+    ``StringIO`` exposes no public accessor for its constructor ``newline``
+    mode. Its pickle state records that mode as the second field; fail closed
+    if the state shape is unavailable or unfamiliar rather than risking a
+    receipt for CR/CRLF-translated records.
+    """
+    try:
+        state = stream.__getstate__()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        isinstance(state, tuple)
+        and len(state) >= 2
+        and state[1] in (None, "", "\n")
+    )
+
+
 def _ensure_empty_destination(stream) -> None:
     """Require a provably empty sidecar destination before emitting a header.
 
@@ -54,6 +73,8 @@ def _ensure_empty_destination(stream) -> None:
     that property and fail closed.
     """
     if isinstance(stream, io.StringIO):
+        if not _stringio_preserves_lf(stream):
+            raise ValueError("sidecar StringIO destination must preserve LF newlines")
         try:
             position = stream.tell()
             stream.seek(0, io.SEEK_END)
@@ -90,9 +111,10 @@ class _ExactUTF8TextSink:
     ``TextIOWrapper`` may translate ``\n`` on write, notably to CRLF on
     Windows when opened with ``newline=None``. For binary-backed text streams
     we therefore flush any pending text and write encoded bytes directly to
-    the underlying buffer. ``StringIO`` is safe because it performs no newline
-    translation. Other opaque text sinks cannot prove byte-exact behavior and
-    are rejected rather than silently emitting non-canonical NDJSON.
+    the underlying buffer. ``StringIO`` is accepted only when its configured
+    newline mode preserves LF. Other opaque text sinks cannot prove byte-exact
+    behavior and are rejected rather than silently emitting non-canonical
+    NDJSON.
     """
 
     def __init__(self, stream):
@@ -103,6 +125,8 @@ class _ExactUTF8TextSink:
             if callable(flush):
                 flush()
         elif isinstance(stream, io.StringIO):
+            if not _stringio_preserves_lf(stream):
+                raise ValueError("sidecar StringIO destination must preserve LF newlines")
             self._binary = None
         else:
             raise ValueError(
