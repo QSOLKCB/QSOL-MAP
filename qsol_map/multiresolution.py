@@ -6,6 +6,10 @@ from collections import deque
 from math import gcd, isqrt
 
 from . import multiresolution_base as _base
+from .short_source_witnesses import (
+    short_source_vectors as _short_source_vectors,
+    vectors_have_joint_gram as _vectors_have_joint_gram,
+)
 
 
 # Preserve the established public/private surface. The base module contains the
@@ -69,6 +73,15 @@ def _compute_long_bin_component_divisors() -> tuple[tuple[int, ...], tuple[int, 
 _LONG_BIN_REAL_DIVISORS, _LONG_BIN_IMAG_DIVISORS = (
     _compute_long_bin_component_divisors()
 )
+_LONG_BIN_POWER_DIVISORS = tuple(
+    gcd(real * real, imag * imag)
+    for real, imag in zip(_LONG_BIN_REAL_DIVISORS, _LONG_BIN_IMAG_DIVISORS)
+)
+_LONG_POWER_TOTAL_DIVISOR = gcd(*_LONG_BIN_POWER_DIVISORS)
+_LONG_POWER_MOMENT_DIVISOR = gcd(*(
+    bin_index * divisor
+    for bin_index, divisor in enumerate(_LONG_BIN_POWER_DIVISORS)
+))
 
 
 def _transform_divisibility_is_valid(channel: dict) -> bool:
@@ -83,9 +96,7 @@ def _transform_divisibility_is_valid(channel: dict) -> bool:
         power = _core._safe_decimal_int(encoded_power)
         if power is None:
             return False
-        real_divisor = _LONG_BIN_REAL_DIVISORS[bin_index]
-        imag_divisor = _LONG_BIN_IMAG_DIVISORS[bin_index]
-        power_divisor = gcd(real_divisor * real_divisor, imag_divisor * imag_divisor)
+        power_divisor = _LONG_BIN_POWER_DIVISORS[bin_index]
         if power_divisor:
             if power % power_divisor:
                 return False
@@ -93,6 +104,18 @@ def _transform_divisibility_is_valid(channel: dict) -> bool:
             return False
 
     for event in spectral["events"]:
+        # The denominator and numerator are respectively sum(P[k]) and
+        # sum(k*P[k]) for this event, not just arbitrary shares of the aggregate.
+        # Each must retain the gcd divisor of the terms in its own sum.
+        for field, divisor in (
+            ("denominator", _LONG_POWER_TOTAL_DIVISOR),
+            ("numerator", _LONG_POWER_MOMENT_DIVISOR),
+        ):
+            value = _core._safe_decimal_int(event["spectral_centroid_bin"][field])
+            if value is None:
+                return False
+            if (divisor and value % divisor) or (not divisor and value != 0):
+                return False
         for component in event["top_components"]:
             bin_index = component["bin"]
             real = _core._safe_decimal_int(component["real"], signed=True)
@@ -319,6 +342,46 @@ def _two_sample_endpoint_witnesses_are_valid(percept: dict) -> bool:
         return False
 
     return search(0)
+
+
+def _short_multichannel_endpoint_witnesses_are_valid(percept: dict) -> bool:
+    """Use one endpoint-compatible PCM assignment for three/four-frame Gram data."""
+    sample_count = percept["source"]["frame_count"]
+    if sample_count not in (3, 4) or percept["source"]["channels"] <= 1:
+        return True
+    gram = _base._relationship_gram_matrix(percept)
+    if gram is None:
+        return False
+    candidates: list[list[tuple[int, ...]]] = []
+    for channel_index, channel in enumerate(percept["channels"]):
+        spectral = channel["long_spectral"]
+        if len(spectral["events"]) != 1:
+            return False
+        event = spectral["events"][0]
+        energy = _core._safe_decimal_int(event["windowed_energy"])
+        if energy is None:
+            return False
+        options: list[tuple[int, ...]] = []
+        for endpoint in (0, LONG_FRAME_SIZE // 2):
+            power = _core._safe_decimal_int(spectral["aggregate_power_by_bin"][endpoint])
+            if power is None:
+                return False
+            root = isqrt(power)
+            magnitude, remainder = divmod(root, _LONG_FFT_ENDPOINT_SCALE)
+            if root * root != power or remainder:
+                return False
+            signed = _endpoint_signed_options(event, endpoint, magnitude)
+            if signed is None:
+                return False
+            options.append(signed)
+        vectors = _short_source_vectors(
+            sample_count, gram[channel_index][channel_index], energy,
+            options[0], options[1],
+        )
+        if not vectors:
+            return False
+        candidates.append(vectors)
+    return _vectors_have_joint_gram(candidates, gram)
 
 
 def _aggregate_residual_allocation_is_feasible(channel: dict) -> bool:
@@ -894,6 +957,8 @@ def _validate_percept_core(percept: object) -> bool:
         if not _aggregate_residual_allocation_is_feasible(channel):
             return False
     if not _two_sample_endpoint_witnesses_are_valid(percept):
+        return False
+    if not _short_multichannel_endpoint_witnesses_are_valid(percept):
         return False
     if not _long_energy_covers_relationship_energy(percept):
         return False
