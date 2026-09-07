@@ -12,13 +12,15 @@ from test_pr2_live_review_fixes import make_wav, rehash
 
 class MixedTransientEvidenceTests(unittest.TestCase):
     def _mixed_candidate_fixture(self):
-        # 2305 source frames produce 19 short events / 18 transitions. Frames
-        # 5 and 10 are plateaus; all other transitions are exact 2x rises and
-        # therefore candidates. Their reported neighbors bind both plateau
-        # deltas to zero even though those two transition records are omitted.
+        # 2432 source frames produce 19 short events / 18 transitions, with a
+        # 128-sample final short tail so unrelated one/two-sample overlap rules
+        # do not constrain this synthetic energy chain. Frames 5 and 10 are
+        # plateaus; all other transitions are exact 2x rises and candidates.
+        # Their reported neighbors bind both plateau deltas to zero even though
+        # those two transition records are omitted.
         changed = copy.deepcopy(
             mr.build_multiresolution_percept(
-                parse_pcm16_wav(make_wav([1] + [0] * 2304))
+                parse_pcm16_wav(make_wav([1] + [0] * 2431))
             )
         )
         energies = [1]
@@ -52,7 +54,6 @@ class MixedTransientEvidenceTests(unittest.TestCase):
             key=lambda item: (-int(item["positive_delta"]), item["frame_index"])
         )
         self.assertEqual(len(candidates), 16)
-        self.assertEqual(energies[-1], 65536)  # one-sample tail: 256^2
 
         transient = changed["percept"]["channels"][0]["transient"]
         reported_sum = sum(int(item["positive_delta"]) for item in candidates)
