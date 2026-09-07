@@ -107,9 +107,9 @@ class ExactSignedWitnessTests(unittest.TestCase):
         wave = parse_pcm16_wav(make_wav(samples, channels=2))
         envelope = mr.build_multiresolution_percept(wave)
         stream = io.StringIO()
-        write_spectral_sidecar(wave, stream, envelope=envelope)
+        write_spectral_sidecar(wave, envelope, stream)
         stream.seek(0)
-        self.assertTrue(verify_spectral_sidecar(stream, envelope))
+        self.assertTrue(verify_spectral_sidecar(envelope, stream))
 
 
 class DivisorScopeTests(unittest.TestCase):
