@@ -223,7 +223,24 @@ windowed_energy <= 32768^2 * sum(w[n]^2 for n = 0..a-1)
 
 When `a = 1`, the energy must additionally equal `x^2` for a signed PCM16 integer `x`. When `a = 2`, it must equal `x^2 + 4*y^2` for signed PCM16 integers `x` and `y`. These exact feasibility checks apply to every channel, including mono sources, and to one- or two-sample tails of longer sources. An upper bound alone does not permit an unattainable integer energy. For longer windows these checks do not claim to solve the full integer realizability problem; full sidecar verification separately reconstructs and binds the actual samples.
 
+For a **complete two-sample source**, the sole long event also binds that energy to its exact endpoints. After removing the fixed scale `s = 32768^10`, the signed real endpoints are `D = x + 2*y` and `N = x - 2*y`, hence:
+
+```text
+D^2 + N^2 = 2 * windowed_energy
+```
+
+Because the identity uses squares, it can be checked from the endpoint aggregate powers even when an endpoint is omitted from `top_components`. It applies per channel and prevents a separately realizable energy from contradicting the exact single-event spectrum.
+
 For a channel with exactly one long event, `aggregate_power_by_bin` is its exact power row. Every entry, including omitted interior bins, must be a sum of two integer squares; DC and Nyquist must additionally be perfect squares whose nonnegative square roots are divisible by the frozen ten-stage coefficient scale `32768^10`. This endpoint scale requirement applies to every single-event channel, regardless of source length or channel count, not only the three-frame mono case in section 8.1. Zero is allowed. The compact verifier applies these bounded necessary checks to each nonzero entry: remove all powers of two and require the remaining odd part to be 1 modulo 4; require an even exponent of each prime in the fixed set `{3, 7, 11, 19, 23, 31}`. These checks reject impossible powers such as 3, 6, 12, and 21 without attempting unbounded factorization of large FFT integers. Passing them is not a complete two-square factorization proof or proof of a realizable FFT row. The single-row restriction does not apply to aggregates over multiple events, which sum more than two squares. In particular, a multi-event endpoint aggregate need not itself be a perfect square. Full sidecar verification checks the actual integer coefficients.
+
+For a single event, define scaled signed endpoint values `D` and `N` whenever the corresponding DC/Nyquist components are reported. A reported endpoint keeps the sign of its `real` coefficient after exact division by `32768^10`; an endpoint omitted from `top_components` supplies only its magnitude and either sign may serve as a compact witness. For `a` available samples the committed window requires:
+
+```text
+D + N = 2 * sum(w[n] * x[n] for even n < a)
+D - N = 2 * sum(w[n] * x[n] for odd  n < a)
+```
+
+The compact verifier therefore requires exact divisibility of `D+N` and `D-N` by the gcd of the corresponding available integer coefficients `2*w[n]`; when one parity has no available samples, its corresponding sum or difference must be exactly zero. These are necessary signed window congruences. They preserve reported endpoint signs without inventing signs for omitted endpoints.
 
 For each channel and bin `k`, let `A[k]` be the aggregate power, `S[k]` the sum of powers reported for that bin in `top_components`, `C[k]` the number of long events selecting it, and `E` the total number of long events. Per-event selected bins must be unique. Count every selection, including a zero-power component. Compact verification requires:
 
@@ -233,6 +250,23 @@ C[k] == E implies S[k] == A[k]
 ```
 
 When every event selects the bin, no omitted row can contribute additional power to that bin. Only bins omitted from at least one event may have an aggregate greater than the selected subtotal. Recomputed region, centroid and percept totals do not waive this exact equality. These are consistency constraints on supplied observations, not reconstruction of all omitted coefficients.
+
+Per-event upper bounds must also respect the authored top-K tie break. Let `(b_w, p_w)` be the weakest selected component in an event under descending power then ascending bin. For an omitted bin `b`:
+
+```text
+b < b_w  implies omitted_power[b] <= p_w - 1
+b > b_w  implies omitted_power[b] <= p_w
+```
+
+The strict integer cutoff for an earlier bin is required because an equal-power earlier bin would have displaced `b_w` in the authored ranking. Selected bins contribute their exact reported power.
+
+Each event centroid has a corresponding selected/omitted feasibility interval. Let `D` be the centroid denominator, `N` its numerator, `S` the sum of selected powers, and `K` the sum of `bin * power` over selected components. Then:
+
+```text
+K <= N <= K + 512 * (D - S)
+```
+
+The lower bound is the selected contribution itself. The upper bound assigns every unit of omitted nonnegative power to the largest retained bin, 512. This is a necessary per-event constraint even when aggregate centroid totals across events remain unchanged.
 
 The complete complex and power matrices are committed separately with:
 
@@ -314,6 +348,23 @@ positive_delta_sum >=
     + (candidate_count - reported_candidate_count)
 ```
 
+When `candidate_count > 16`, the 16 reported entries are not an arbitrary subset. They are the exact prefix under the authored ordering `(-positive_delta, frame_index)`. Let the weakest reported item have delta `d_w` at frame `f_w`. Any omitted candidate at frame `f` must satisfy:
+
+```text
+f < f_w  implies omitted_delta <= d_w - 1
+f > f_w  implies omitted_delta <= d_w
+```
+
+An equal-delta earlier frame would win the ascending-frame tie break and must therefore have appeared in the reported 16. When every transition is a candidate, every unreported transition is one of these omitted candidates, so the exact positive mass outside the reported list must be no greater than the sum of its per-frame cutoff allowances, every omitted candidate remains strictly positive, and `maximum_positive_delta` equals the strongest reported candidate delta.
+
+A summary maximum may be larger than the strongest reported **candidate** only when that maximum belongs to a transition that is not a candidate. Otherwise a stronger omitted candidate would have ranked into the reported set. Therefore, whenever:
+
+```text
+maximum_positive_delta > strongest_reported_candidate_delta
+```
+
+compact acceptance requires at least one non-candidate transition and requires the positive-delta mass outside the reported candidate list to be at least `maximum_positive_delta`, so one such transition can attain the declared maximum.
+
 For non-zero previous energy:
 
 ```json
@@ -355,7 +406,7 @@ For short sources, additional integer realizability constraints are identity-bea
 windowed_energy = sample[0]^2 * w[0]^2 + sample[1]^2 * w[1]^2
 ```
 
-with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid.
+with `w[0] = 1` and `w[1] = 2`. A two-frame mono source has no pairwise Gram records, but must still admit PCM16 samples realizing that same weighted energy. A merely bounded but unattainable value is invalid. Section 5's `D^2 + N^2 = 2*windowed_energy` identity additionally binds every complete two-sample channel to its exact single-event endpoint powers.
 
 For a three-frame multi-channel source, one joint assignment of signed PCM16 triples must reproduce every Gram entry and each channel's long-window energy. Individually realizable diagonals or separate witnesses for each pair are insufficient. For each channel, with declared source energy `E` and windowed energy `W`, its candidate triple `(x, y, z)` must satisfy:
 
@@ -396,7 +447,9 @@ R = 2 * (W - 4*y^2) - A^2
 
 Require exact integer division and a nonnegative perfect square `R`. For either root `d = +/-sqrt(R)`, derive `x = (A+d)/2` and `z = (A-d)/6`, again requiring exact division and all three signed PCM16 bounds. At least one valid triple must exist. Zero signs or repeated roots need not be duplicated. There are at most eight candidate triples, so no search over PCM16 coordinate pairs or large-integer factorization is needed.
 
-This is exact feasibility for the declared weighted energy and the two endpoint powers. It does not verify the remaining spectrum, its matrix commitments, or the source digests. The check applies to the complete three-frame mono source, not to three-sample tails of longer sources where aggregate endpoints are sums across events. Full sidecar verification remains the complete reconstructed-evidence check. In particular, rehashing a genuine `[1, 0, 0]` envelope after replacing its energy `"1"` with `"2"` must return `False`.
+If DC or Nyquist is present in the event's `top_components`, its signed `real` value is identity-bearing evidence. After exact division by `s`, the accepted triple must reproduce that reported signed endpoint value. The solver may choose either sign only for an endpoint omitted from `top_components`. Thus endpoint powers determine the candidate magnitudes, but reported component signs constrain which magnitude-sign witness is admissible.
+
+This is exact feasibility for the declared weighted energy and the two endpoint powers plus any reported endpoint signs. It does not verify the remaining spectrum, its matrix commitments, or the source digests. The check applies to the complete three-frame mono source, not to three-sample tails of longer sources where aggregate endpoints are sums across events. Full sidecar verification remains the complete reconstructed-evidence check. In particular, rehashing a genuine `[1, 0, 0]` envelope after replacing its energy `"1"` with `"2"`, or rehashing `[1, 0, 1]` after flipping only a reported Nyquist sign, must return `False`.
 
 ## 9. Compact percept identity
 
@@ -446,10 +499,14 @@ It requires:
 - canonical matrix/source SHA-256 digests;
 - valid bounded decimal strings;
 - valid long-event structure, source/window energy bounds, one/two-sample energy feasibility including mono and tails, finite transform-power bounds, and top-component capacity bounds;
-- three-frame mono weighted-energy and endpoint-power feasibility under section 8.1, without bypassing mono sources because Gram records are absent;
+- complete two-sample source energy bound to exact endpoint powers by `D^2 + N^2 = 2*windowed_energy`;
+- three-frame mono weighted-energy and endpoint-power feasibility under section 8.1, with every reported endpoint sign preserved by the same PCM16 witness;
 - the bounded single-event aggregate two-square checks and exact endpoint squares with square roots divisible by `32768^10` in section 5, including bins omitted from the compact components;
-- exact aggregate equality for every bin selected in all long events, counting zero-power selections, and the selected-subtotal lower bound for other bins;
+- source-tail signed endpoint congruences for reported one-event DC/Nyquist components, while omitted endpoints remain sign-unspecified;
+- exact aggregate equality for every bin selected in all long events, counting zero-power selections, the selected-subtotal lower bound for other bins, and per-event omitted-bin upper bounds that preserve the descending-power/ascending-bin tie break;
+- per-event centroid lower and upper bounds from selected and omitted power: `K <= N <= K + 512*(D-S)` as defined in section 5;
 - valid transient rule structure, arithmetic, source-sized energy bounds, one/two-sample short-tail feasibility, transition-multiplicity bounds, and minimum contributions from omitted candidates;
+- the exact top-16 candidate cutoff when candidates are truncated, including ascending-frame tie ordering, and feasibility of any summary maximum stronger than the strongest reported candidate from an actual non-candidate transition with sufficient unreported positive mass;
 - valid channel-pair structure, correlation arithmetic, positive-semidefinite Gram feasibility, Gram rank not exceeding `frame_count`, and short-source integer realizability including joint two- and three-frame Gram/long-energy compatibility;
 - the final domain-separated percept digest.
 
